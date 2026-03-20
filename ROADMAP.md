@@ -1,917 +1,534 @@
-# Claude Overseer — MVP 架构设计
+# Mango ROADMAP — AI 驱动的代码生成平台
 
-> 精简自 OpenClaw 的自动化开发流水线。只做一件事：**Issue 进来，代码出去。**
-
----
-
-## 1. MVP 范围
-
-### 保留（核心路径）
-
-- Issue CRUD + 状态流转
-- Issue → Agent Task 转换（手动触发）
-- Agent Task 队列 + 调度
-- Agent 执行管线（LLM + 工具调用）
-- Git Worktree 工作区隔离（作为 Agent 工具，由 Agent 自主调用）
-- Memory（任务级经验记忆，KV 存储，Agent 通过工具读写，跨任务复用项目知识）
-- REST API（HTTP only）
-- SQLite 存储
-
-### 移除（推迟到后续版本）
-
-| 移除项 | 理由 | 推迟到 |
-|--------|------|--------|
-| Auth (JWT/API Key) | 单用户本地部署，不需要认证 | v1.5 |
-| WebSocket Hub | MVP 用轮询或 SSE 替代，减少复杂度 | v1.5 |
-| Comment Service | MVP 的 Issue 不需要评论系统 | v1.5 |
-| Label / Milestone | 用 `type` 字段替代标签，不做里程碑 | v1.5 |
-| Config 热重载 / Watcher | 改配置重启即可 | v2.0 |
-| SecretRef ($env/$file) | 直接读环境变量 | v2.0 |
-| 模型降级 (fallback) | MVP 只配一个模型 | v1.5 |
-| FTS5 代码库知识索引 | 全文索引是重功能，MVP 只做轻量 KV 记忆 | v2.0 |
-| AuditLog | MVP 不做审计 | v2.0 |
-| 任务依赖 DAG | MVP 每个 Issue 只生成 1 个 Task | v1.5 |
-| Web UI | MVP 只提供 API，用 curl/脚本交互 | v1.5 |
-| Notifications / Webhooks | MVP 不做通知 | v2.0 |
+> **Issue 进来，代码出去。**
+> 极简 Agent Runtime + OpenCode 执行层，先跑通一条最窄的链路。
 
 ---
 
-## 2. 架构
+## 一、核心链路
 
 ```
-         curl / 脚本 / 未来 Web UI
-                  │
-                  │ HTTP (REST)
-                  ▼
-┌──────────────────────────────────────────────────────────────┐
-│              HTTP Server (单进程, Hono / Fastify)              │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │  LAYER 1: Issue Service                                 │ │
-│  │  ┌──────────────┐  ┌─────────────────────┐             │ │
-│  │  │ Issue CRUD   │  │ IssueToTaskConverter│             │ │
-│  │  │ + 状态流转    │  │ (Issue → AgentTask) │             │ │
-│  │  └──────────────┘  └────────┬────────────┘             │ │
-│  └─────────────────────────────┼───────────────────────────┘ │
-│                                │                              │
-│  ┌─────────────────────────────▼───────────────────────────┐ │
-│  │  LAYER 2: Agent Runtime                                 │ │
-│  │                                                          │ │
-│  │  ┌────────────┐  ┌──────────────────────────────────┐  │ │
-│  │  │ Task Queue │  │ Runner (调度 → Agent Runtime)     │  │ │
-│  │  │ + Scheduler│  │                                    │  │ │
-│  │  └────────────┘  │  ┌──────────────────────────────┐ │  │ │
-│  │                   │  │ Agent Runtime (唯一的运行时)  │ │  │ │
-│  │                   │  │ runTask → runTurn → runAttempt│ │  │ │
-│  │                   │  │                              │ │  │ │
-│  │                   │  │ ┌─ Tool Registry ──────────┐ │ │  │ │
-│  │                   │  │ │ worktree_create/cleanup  │ │ │  │ │
-│  │                   │  │ │ file_read/write/search   │ │ │  │ │
-│  │                   │  │ │ shell_exec · git_ops     │ │ │  │ │
-│  │                   │  │ │ git_push · github_pr     │ │ │  │ │
-│  │                   │  │ │ memory_read/extract      │ │ │  │ │
-│  │                   │  │ │ claude_code (委托子任务)  │ │ │  │ │
-│  │                   │  │ └──────────────────────────┘ │ │  │ │
-│  │                   │  └──────────────────────────────┘ │  │ │
-│  │                   └──────────────────────────────────┘  │ │
-│  └──────────────────────────────────────────────────────────┘ │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │  SQLite (issues · agent_tasks · executions · memory)    │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
+Issue 面板 (Web UI)
+   ↓  用户创建 Issue，点击 "AI 执行"
+Agent Runtime (Python, 自研)
+   ↓  runTask → runTurn → runAttempt 循环
+   ↓  每轮携带 TurnContext（Issue + last_result + git_diff + history）
+Skill (构造 prompt，调用 OpenCode)
+   ↓  命令白名单约束（prompt 注入 + 审计）
+Execution (OpenCode serve HTTP API)
+   ↓  OpenCode 读代码、改代码、执行命令
+   ↓  超时控制：Attempt 300s / Task 1800s / 用户随时 cancel
+Result
+   ├── 完成 → git commit 到分支
+   ├── 失败 → 重试（最多 3 次）
+   └── 仍失败 → waiting_human（用户可附加指令重试）
 ```
-
-### 核心设计：Agent Runtime（唯一的运行时）
-
-**没有 AgentBackend 接口，没有可插拔后端。** 只有一个 Agent Runtime。
-
-跟 OpenClaw 彻底对齐：Agent Runtime 就是那个 Agent。它自己管理 LLM 对话、
-工具调用、工作区创建、代码编写、推送、PR 创建。所有外部能力（包括 Claude Code CLI）
-都是工具箱里的工具，不是运行时的替代品。
-
-```
-Agent Runtime (唯一)
-  └── Tool Registry (工具箱)
-        ├── worktree_create      # git worktree add
-        ├── worktree_cleanup     # git worktree remove
-        ├── file_read            # 读文件
-        ├── file_write           # 写文件
-        ├── file_search          # grep / glob
-        ├── shell_exec           # 执行 shell 命令
-        ├── git_ops              # git add/commit/diff/log
-        ├── git_push             # git push
-        ├── github_pr            # 创建 PR
-        ├── memory_read          # 读取跨任务积累的项目知识
-        ├── memory_extract       # 从当前对话历史中结构化提取经验记忆并保存
-        └── claude_code          # 委托子任务给 Claude Code CLI
-```
-
-**`claude_code` 是工具，不是运行时。** Agent 在执行任务时，可以选择把某个子任务
-委托给 Claude Code CLI 去做（比如"在这个 worktree 里实现 API endpoint"），
-但决策权在 Agent Runtime，不在 Claude Code。
-
-### Agent Runtime 输入输出
-
-```typescript
-interface AgentRunParams {
-  task: AgentTask;
-  issue: Issue;
-  abortSignal?: AbortSignal;
-}
-
-interface AgentRunResult {
-  success: boolean;
-  summary: string;               // Agent 对完成情况的总结
-  filesModified: string[];
-  pullRequestUrl?: string;       // Agent 自己创建的 PR
-  workspacePath?: string;        // Agent 创建的工作区路径（用于审查）
-  error?: string;
-}
-```
-
-### Agent Runtime 3 层执行管线
-
-跟 OpenClaw 一样，自己管理 LLM 对话、工具调用解析、上下文窗口。
-**Agent 管一切**：通过工具自己创建 worktree、写代码、推送、创建 PR。
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  AgentRuntime.run(params)                                │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │  runTask(context)                                   │  │
-│  │    · 构建 system prompt (角色 + 任务描述 + 仓库上下文)│  │
-│  │    · 注入已有 Memory (项目知识) 到 system prompt     │  │
-│  │    · 初始化对话 messages[]                           │  │
-│  │    · 循环调用 runTurn() 直到任务完成或失败            │  │
-│  │    · Agent 在收尾阶段调用 memory_extract 提取经验     │  │
-│  │    · git commit 结果文件                             │  │
-│  │                                                     │  │
-│  │  ┌──────────────────────────────────────────────┐   │  │
-│  │  │  runTurn(messages)                            │   │  │
-│  │  │    · 检查 token 预算，必要时截断上下文          │   │  │
-│  │  │    · 调用 runAttempt()，失败时模型降级重试      │   │  │
-│  │  │    · primary → fallback[0] → fallback[1] → 报错│   │  │
-│  │  │                                               │   │  │
-│  │  │  ┌────────────────────────────────────────┐   │   │  │
-│  │  │  │  runAttempt(model, messages)            │   │   │  │
-│  │  │  │    · 单次 LLM API 调用                   │   │   │  │
-│  │  │  │    · 流式接收响应                         │   │   │  │
-│  │  │  │    · 解析 tool_use blocks                │   │   │  │
-│  │  │  │    · 执行工具 → 收集 tool_result          │   │   │  │
-│  │  │  │    · 拼装 assistant+tool_result 消息      │   │   │  │
-│  │  │  │    · 判断是否需要继续 (有 tool_use → 继续) │   │   │  │
-│  │  │  └────────────────────────────────────────┘   │   │  │
-│  │  └──────────────────────────────────────────────┘   │  │
-│  └────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
-```
-
-```typescript
-class AgentRuntime {
-  private modelProvider: ModelProvider;
-  private toolRegistry: ToolRegistry;
-
-  async run(params: AgentRunParams): Promise<AgentRunResult> {
-    return this.runTask(params);
-  }
-
-  // ═══ Layer 1: runTask — 任务级编排 ═══
-  private async runTask(params: AgentRunParams): Promise<AgentRunResult> {
-    const { task, issue, abortSignal } = params;
-
-    // 1. 构建系统提示词（包含所有工具的使用指引 + 已有项目知识记忆）
-    const systemPrompt = this.buildSystemPrompt(issue, task);
-
-    // 2. 初始化对话
-    const messages: Message[] = [
-      { role: 'user', content: this.buildTaskPrompt(issue, task) }
-    ];
-
-    // 3. Agent 循环 — 跟 OpenClaw 的 runReplyAgent 同构
-    //    Agent 可通过 memory_read 获取已有项目知识
-    //    然后调用 worktree_create → 写代码 → git push → github_pr → worktree_cleanup
-    //    收尾阶段调用 memory_extract 从对话历史中提取经验记忆
-    //    也可能调用 claude_code 工具委托子任务
-    let turnCount = 0;
-    const maxTurns = this.config.maxTurns ?? 50;
-
-    while (turnCount < maxTurns) {
-      abortSignal?.throwIfAborted();
-
-      const turnResult = await this.runTurn(systemPrompt, messages);
-      turnCount++;
-
-      messages.push(...turnResult.newMessages);
-
-      if (!turnResult.hasToolCalls) {
-        return this.extractResult(turnResult.finalText);
-      }
-    }
-
-    return { success: false, summary: '', filesModified: [], error: `Exceeded max turns (${maxTurns})` };
-  }
-
-  // ═══ Layer 2: runTurn — 单轮对话 + 模型降级 ═══
-  private async runTurn(
-    systemPrompt: string,
-    messages: Message[],
-  ): Promise<TurnResult> {
-    const trimmedMessages = this.trimContext(messages);
-    const models = [this.config.model.primary, ...(this.config.model.fallback ?? [])];
-
-    for (const model of models) {
-      try {
-        return await this.runAttempt(model, systemPrompt, trimmedMessages);
-      } catch (err) {
-        if (this.isRetryable(err) && model !== models.at(-1)) {
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw new Error('All models exhausted');
-  }
-
-  // ═══ Layer 3: runAttempt — 单次 LLM 调用 + 工具执行 ═══
-  private async runAttempt(
-    model: ModelRef,
-    systemPrompt: string,
-    messages: Message[],
-  ): Promise<TurnResult> {
-    // 1. 调用 LLM API
-    const response = await this.modelProvider.chat({
-      model: model.model,
-      provider: model.provider,
-      system: systemPrompt,
-      messages,
-      tools: this.toolRegistry.getToolDefinitions(),
-      maxTokens: this.config.model.maxTokens,
-    });
-
-    // 2. 解析响应中的 tool_use blocks
-    const toolCalls = response.content.filter(b => b.type === 'tool_use');
-    const newMessages: Message[] = [{ role: 'assistant', content: response.content }];
-
-    if (toolCalls.length === 0) {
-      const finalText = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-      return { newMessages, hasToolCalls: false, finalText };
-    }
-
-    // 3. 依次执行每个工具调用
-    const toolResults: ToolResultBlock[] = [];
-    for (const call of toolCalls) {
-      const result = await this.toolRegistry.execute(call.name, call.input);
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: call.id,
-        content: result.output,
-        is_error: result.isError,
-      });
-    }
-
-    newMessages.push({ role: 'user', content: toolResults });
-    return { newMessages, hasToolCalls: true, finalText: '' };
-  }
-}
-```
-
-#### OpenClaw 管线 vs Overseer 管线对照
-
-| 层级 | OpenClaw | Overseer Agent Runtime |
-|------|----------|----------------------|
-| **最外层** | `runReplyAgent()` — 管理整个回复周期 | `runTask()` — 管理整个任务周期 |
-| **中间层** | `runAgentTurnWithFallback()` — 模型降级 | `runTurn()` — 模型降级 + token 管理 |
-| **最内层** | `runEmbeddedAttempt()` — 单次 API 调用 + tool_use 解析 | `runAttempt()` — 单次 API 调用 + tool_use 解析 |
-| **去掉的** | `runEmbeddedPiAgent()` — auth profile 轮转 | 无需（单 API Key） |
-
-### 工具注册表
-
-```typescript
-// tools/registry.ts
-class ToolRegistry {
-  private tools: Map<string, Tool> = new Map();
-
-  register(tool: Tool): void { this.tools.set(tool.name, tool); }
-
-  getToolDefinitions(): ToolDefinition[] {
-    return [...this.tools.values()].map(t => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema,
-    }));
-  }
-
-  async execute(name: string, input: unknown): Promise<ToolOutput> {
-    const tool = this.tools.get(name);
-    if (!tool) return { output: `Unknown tool: ${name}`, isError: true };
-    return tool.execute(input);
-  }
-}
-
-// 内置工具
-const tools: Tool[] = [
-  // ── 工作区管理 ──
-  new WorktreeCreateTool(),       // git worktree add → 返回工作区路径
-  new WorktreeCleanupTool(),      // git worktree remove → 清理工作区
-
-  // ── 文件操作 ──
-  new FileReadTool(),             // 读文件
-  new FileWriteTool(),            // 写文件
-  new FileSearchTool(),           // grep / glob 搜索
-
-  // ── 执行 ──
-  new ShellExecTool(),            // 执行 shell 命令
-
-  // ── Git / GitHub ──
-  new GitOpsTool(),               // git add/commit/diff/log
-  new GitPushTool(),              // git push
-  new GitHubPRTool(),             // 创建 PR
-
-  // ── 记忆 ──
-  new MemoryReadTool(),           // 读取跨任务积累的项目知识
-  new MemoryExtractTool(),        // 从对话历史中结构化提取经验记忆并保存
-
-  // ── 子任务委托 ──
-  new ClaudeCodeTool(),           // 委托子任务给 Claude Code CLI
-];
-```
-
-#### MemoryReadTool — 读取经验记忆（Agent 工具）
-
-Agent 在任务执行过程中通过 `memory_read` 读取已有项目知识：
-
-```typescript
-class MemoryReadTool implements Tool {
-  name = 'memory_read';
-  description = '读取之前任务积累的项目知识。可按类别过滤，也可读取全部。';
-  inputSchema = {
-    type: 'object',
-    properties: {
-      category: {
-        type: 'string',
-        enum: ['project_structure', 'conventions', 'lessons_learned', 'tool_usage'],
-        description: '按类别过滤（可选，不传则返回全部）',
-      },
-    },
-  };
-
-  async execute(input: { category?: string }): Promise<ToolOutput> {
-    const entries = input.category
-      ? await memoryRepo.getByCategory(input.category)
-      : await memoryRepo.getAll();
-
-    if (entries.length === 0) {
-      return { output: '暂无已知项目知识。', isError: false };
-    }
-
-    const formatted = entries
-      .map(e => `[${e.category}] ${e.key}: ${e.value}`)
-      .join('\n');
-    return { output: formatted, isError: false };
-  }
-}
-```
-
-#### MemoryExtractTool — 结构化提取经验记忆（Agent 工具）
-
-Agent 在任务收尾时调用 `memory_extract`，工具内部完成 **对话摘要 → LLM 结构化提取 → 批量写入**。
-
-与逐条 `memory_write` 的区别：Agent 不需要自己判断"什么值得记"，
-只需在收尾时调用一次 `memory_extract`，由工具内部的提取 prompt 保证质量。
-
-```typescript
-class MemoryExtractTool implements Tool {
-  name = 'memory_extract';
-  description = '从当前任务的执行历史中，结构化提取可复用的项目知识并保存。在任务收尾时调用一次即可。';
-  inputSchema = {
-    type: 'object',
-    properties: {
-      conversation_summary: {
-        type: 'string',
-        description: '当前任务的执行摘要（关键发现、踩过的坑、项目结构信息等）',
-      },
-    },
-    required: ['conversation_summary'],
-  };
-
-  async execute(
-    input: { conversation_summary: string },
-    context: ToolContext,
-  ): Promise<ToolOutput> {
-    const extractionPrompt = `
-分析以下 Agent 执行摘要，提取可复用的项目知识。
-
-只提取以下 4 类信息，忽略任务特定的细节：
-
-1. project_structure — 项目结构发现
-   例: entry_file=src/index.ts, orm=drizzle, router=src/server/routes/
-
-2. conventions — 项目约定
-   例: package_manager=pnpm, test_framework=vitest, code_style=单引号+2空格
-
-3. lessons_learned — 踩过的坑
-   例: 不要用 npm（会报错）, 数据库迁移必须先执行 seed
-
-4. tool_usage — 工具/命令用法
-   例: build_command=pnpm run build, dev_command=pnpm dev
-
-规则：
-- 只输出对【未来任务】有复用价值的知识
-- 如果没有新发现，返回空数组
-- 每条 value 不超过 100 字
-
-输出 JSON 数组：
-[{ "category": "...", "key": "...", "value": "..." }]
-`;
-
-    const result = await context.modelProvider.chat({
-      model: context.config.model.primary,
-      messages: [
-        { role: 'user', content: extractionPrompt + '\n\n' + input.conversation_summary }
-      ],
-      maxTokens: 1024,
-    });
-
-    const entries = JSON.parse(extractJsonFromResponse(result));
-    let saved = 0;
-    for (const entry of entries) {
-      await memoryRepo.upsert({ ...entry, source: context.taskId });
-      saved++;
-    }
-
-    return {
-      output: saved > 0
-        ? `已提取并保存 ${saved} 条项目知识:\n${entries.map((e: any) => `  [${e.category}] ${e.key}: ${e.value}`).join('\n')}`
-        : '未发现新的可复用项目知识。',
-      isError: false,
-    };
-  }
-}
-```
-
-#### ClaudeCodeTool — 子任务委托工具
-
-`claude_code` 不是运行时，是工具。Agent 可以把一个明确的子任务委托给它：
-
-```typescript
-class ClaudeCodeTool implements Tool {
-  name = 'claude_code';
-  description = '委托一个子任务给 Claude Code CLI 执行。适合需要完整 IDE 能力的独立子任务。';
-  inputSchema = {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: '子任务描述' },
-      cwd: { type: 'string', description: '执行目录（通常是 worktree 路径）' },
-      maxTurns: { type: 'number', description: '最大对话轮次', default: 30 },
-    },
-    required: ['prompt', 'cwd'],
-  };
-
-  async execute(input: { prompt: string; cwd: string; maxTurns?: number }): Promise<ToolOutput> {
-    const result = await spawn('claude', [
-      '--print',
-      '--output-format', 'json',
-      '--max-turns', String(input.maxTurns ?? 30),
-      input.prompt,
-    ], { cwd: input.cwd });
-
-    return { output: parseClaudeOutput(result), isError: false };
-  }
-}
-```
-
-### Runner 中的调度逻辑
-
-Runner 只做**调用 Agent Runtime + 状态更新**，不介入 Agent 的执行过程。
-没有 backend 选择，没有环境准备。Agent 管一切。
-
-```typescript
-// engine/runner.ts
-
-class Runner {
-  private agent: AgentRuntime;
-
-  constructor(config: Config) {
-    this.agent = new AgentRuntime(config);
-  }
-
-  async runTask(task: AgentTask, issue: Issue): Promise<void> {
-    // 1. 执行 — Agent 内部完成所有事情:
-    //    memory_read → 加载已有项目知识
-    //    创建 worktree → 写代码 → git commit → git push → 创建 PR → 清理 worktree
-    //    收尾阶段调用 memory_extract → 结构化提取经验记忆
-    //    可能还会调用 claude_code 工具委托子任务
-    const result = await this.agent.run({ task, issue });
-
-    // 2. Runner 只做状态更新
-    if (result.success) {
-      await taskRepo.complete(task.id, result);
-      await issueRepo.updateStatus(issue.id, 'in_review');
-    } else {
-      await taskRepo.fail(task.id, result.error);
-    }
-  }
-}
-```
-
-**关键简化**：
-- 无 WebSocket，无认证，无热重载
-- 1 Issue = 1 Agent Task（不做拆分、不做依赖 DAG）
-- **单一 Agent Runtime**，没有可插拔 backend。claude_code 是工具，不是运行时
-- **Agent 管一切**：worktree 创建/清理、git push、PR 创建全是工具，由 LLM 自己决定何时调用
-- Runner 超薄：只调 `agent.run()` + 更新数据库状态
 
 ---
 
-## 3. 数据模型
+## 二、架构
 
-### 3.1 核心实体 (4 个表)
-
-```typescript
-interface Issue {
-  id: string;               // ULID
-  title: string;
-  description: string;      // Markdown
-  type: 'feature' | 'bugfix' | 'refactor' | 'docs';
-  status: 'open' | 'ai_assigned' | 'in_progress' | 'in_review' | 'done' | 'failed';
-  agentTaskId?: string;     // 1:1 关联（MVP 不做拆分）
-  pullRequestUrl?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-interface AgentTask {
-  id: string;
-  issueId: string;
-  status: 'queued' | 'executing' | 'completed' | 'failed';
-  retryCount: number;
-  maxRetries: number;       // 默认 3
-  branchName?: string;
-  result?: {
-    summary: string;
-    filesModified: string[];
-  };
-  errorMessage?: string;
-  createdAt: Date;
-  completedAt?: Date;
-}
-
-interface Execution {
-  id: string;
-  taskId: string;
-  attemptNumber: number;
-  status: 'running' | 'completed' | 'failed';
-  modelUsed: string;
-  tokenUsage: { prompt: number; completion: number };
-  toolCalls: ToolCallRecord[];   // JSON
-  errorMessage?: string;
-  startedAt: Date;
-  finishedAt?: Date;
-  durationMs?: number;
-}
-
-interface MemoryEntry {
-  id: string;
-  category: 'project_structure' | 'conventions' | 'lessons_learned' | 'tool_usage';
-  key: string;                    // 如 "package_manager", "test_framework"
-  value: string;                  // 如 "pnpm", "vitest"
-  source: string;                 // 产生该记忆的 task ID
-  createdAt: Date;
-}
+```
+┌─────────────────────────────────┐
+│        Web UI (Issue 面板)       │
+│  创建 Issue · 查看状态           │
+└──────────────┬──────────────────┘
+               │ REST API
+               ▼
+┌─────────────────────────────────┐
+│     FastAPI Server (Python)      │
+│  Issue CRUD · Task 状态 · 触发   │
+└──────────────┬──────────────────┘
+               │
+               ▼
+┌─────────────────────────────────┐
+│      Agent Runtime (核心)        │
+│                                  │
+│  runTask                         │
+│   ├── 加载 Issue 上下文          │
+│   ├── git checkout -b 创建分支   │
+│   ├── 进入 Turn 循环:            │
+│   │   runTurn                    │
+│   │    ├── 选择 Skill            │
+│   │    ├── Skill 构造 prompt     │
+│   │    ├── runAttempt            │
+│   │    │    └── 调用 OpenCode    │
+│   │    └── 完成? → 退出循环      │
+│   │       失败? → 下一 Turn      │
+│   ├── 成功 → git commit 到分支    │
+│   └── 更新 Issue 状态            │
+└──────────────┬──────────────────┘
+               │ HTTP API
+               ▼
+┌─────────────────────────────────┐
+│   OpenCode (serve 模式, 常驻)    │
+│   POST /session → /message       │
+│   AI 编码能力: 读/写/搜索/命令   │
+└─────────────────────────────────┘
+               │
+        ┌──────┴───────┐
+        │   SQLite DB   │
+        │  issues       │
+        │  executions   │
+        └──────────────┘
 ```
 
-**Memory 说明**：轻量级 KV 记忆，用于跨任务积累项目知识。Agent 通过 `memory_read`
-工具读取历史经验；在任务收尾阶段通过 `memory_extract` 工具从对话历史中结构化提取新知识
-并写入。提取逻辑封装在工具内部（独立 LLM 调用 + 明确的提取规则），Agent 只需调用一次，
-无需自己判断"什么值得记"。同一 `(category, key)` 只保留最新值，避免记忆膨胀。
+### 为什么用 OpenCode 做执行层
 
-典型记忆条目示例：
-- `[project_structure] entry_file` → `src/index.ts`
-- `[conventions] package_manager` → `pnpm`
-- `[conventions] test_framework` → `vitest, 测试文件命名 *.test.ts`
-- `[lessons_learned] npm_not_working` → `本项目使用 pnpm，不要用 npm`
-- `[tool_usage] build_command` → `pnpm run build`
+RE_ROADMAP 里要自己写 12 个 Tool（file_read、file_write、shell_exec、git_ops...），每个都要实现、测试、维护。
 
-### 3.2 SQLite DDL
+OpenCode 已经是一个完整的 AI 编码代理，内置了所有这些能力。通过 `opencode serve` 暴露 HTTP API，Agent Runtime 只需要：
+
+```python
+# 创建会话
+session = httpx.post(f"{OPENCODE_URL}/session").json()
+
+# 发送任务
+response = httpx.post(
+    f"{OPENCODE_URL}/session/{session['id']}/message",
+    json={
+        "parts": [{"type": "text", "text": prompt}],
+    },
+    timeout=300,
+)
+```
+
+**Runtime 是大脑（决策 + 循环控制），OpenCode 是手（代码修改 + 命令执行）。**
+
+---
+
+## 三、Agent Runtime 设计
+
+保留三层循环结构，但职责更聚焦：
+
+```
+runTask(issue)                         ← 任务级（总超时 1800s）
+│
+│  1. 从 DB 加载 Issue（含 human_instruction，如有）
+│  2. git checkout -b agent/{issue_id}
+│  3. 创建 Execution 记录
+│  4. 注册 cancel token（响应用户取消）
+│  5. 进入 Turn 循环
+│  6. 结束后更新状态
+│
+├─▶ runTurn(context) × max_turns (默认 3)    ← 对话轮级
+│   │
+│   │  1. 构建 TurnContext（见下方）
+│   │  2. Skill 基于 TurnContext 构造 prompt
+│   │  3. 调用 runAttempt（检查 cancel token）
+│   │  4. 判断结果：完成 → 退出循环，失败 → 继续下一 Turn
+│   │  5. 记录 execution log
+│   │
+│   └─▶ runAttempt(prompt)                   ← 执行级（超时 300s）
+│       │
+│       │  1. 调用 OpenCode HTTP API
+│       │  2. 等待执行完成（可被 cancel 中断）
+│       │  3. 返回结果（成功/失败 + 输出）
+│       │
+│       └── 返回 AttemptResult
+```
+
+### TurnContext — 每轮上下文
+
+每轮 Turn 携带完整上下文，避免"瞎重试"：
+
+```python
+@dataclass
+class TurnContext:
+    issue: Issue                    # 原始 Issue（title + description）
+    turn_number: int               # 当前第几轮（从 1 开始）
+    max_turns: int                 # 最大轮数
+    last_result: Optional[str]     # 上轮 OpenCode 返回内容
+    last_error: Optional[str]      # 上轮错误信息
+    git_diff: Optional[str]        # 当前分支 vs default_branch 的 diff
+    execution_history: list[dict]  # 历史轮次摘要 [{turn, status, summary}]
+    human_instruction: Optional[str]  # 用户附加指令（retry with instruction）
+```
+
+> **截断策略**：`git_diff` 超过 2000 行时只保留前 2000 行 + 提示 `[truncated]`。
+> `last_result` 超过 5000 字符时摘要处理。
+
+### 超时与取消机制
+
+三层超时，逐层控制：
+
+| 层级 | 超时 | 触发行为 |
+|------|------|---------|
+| Attempt（单次调用） | 300s | abort 当前 OpenCode HTTP 请求 |
+| Task（整个任务） | 1800s | 终止所有 Turn，Task 标记 failed |
+| 用户 cancel | 随时 | cancel token 传播，abort 正在进行的调用 |
+
+实现要点：
+- **cancel token**：`asyncio.Event`，贯穿 runTask → runTurn → runAttempt
+- **HTTP abort**：OpenCode 调用使用 httpx，cancel 时调用 `response.aclose()`
+- **cancel API**：`POST /api/issues/{id}/cancel` 设置 cancel token，正在执行的 Attempt 在下一个 await 点检测并退出
+- **进程级 kill**：如果 OpenCode 进程无响应（超时后仍未返回），记录异常并标记 Task failed
+
+### 状态机
+
+```
+Issue:    open → running → done
+                        → failed → waiting_human → running → ...
+                                        ↑ 用户 POST /retry with instruction
+Task:     queued → executing → completed / failed / cancelled
+                      ↑            │
+                      └── retry ───┘ (retry_count < 3)
+```
+
+### 退出条件
+
+| 条件 | 结果 |
+|------|------|
+| OpenCode 完成任务 | → git commit 到分支，Task completed |
+| 达到 max_turns（3 次） | → Task failed → Issue waiting_human |
+| Attempt 超时（300s） | → 当前 Turn failed，尝试下一 Turn |
+| Task 总超时（1800s） | → Task failed → Issue waiting_human |
+| 用户 cancel | → Task cancelled，保留已有进度 |
+| 用户 retry with instruction | → 重新进入 running，携带新指令 |
+
+---
+
+## 四、数据模型
+
+两张表 + 一张日志表：
 
 ```sql
 CREATE TABLE issues (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  type TEXT NOT NULL DEFAULT 'feature'
-    CHECK(type IN ('feature','bugfix','refactor','docs')),
   status TEXT NOT NULL DEFAULT 'open'
-    CHECK(status IN ('open','ai_assigned','in_progress','in_review','done','failed')),
-  agent_task_id TEXT,
-  pull_request_url TEXT,
+    CHECK(status IN ('open', 'running', 'done', 'failed', 'waiting_human', 'cancelled')),
+  branch_name TEXT,
+  human_instruction TEXT,              -- 用户附加指令（retry with instruction）
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE agent_tasks (
-  id TEXT PRIMARY KEY,
-  issue_id TEXT NOT NULL REFERENCES issues(id),
-  status TEXT NOT NULL DEFAULT 'queued'
-    CHECK(status IN ('queued','executing','completed','failed')),
-  retry_count INTEGER DEFAULT 0,
-  max_retries INTEGER DEFAULT 3,
-  branch_name TEXT,
-  result TEXT,               -- JSON
-  error_message TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  completed_at TEXT
-);
-
 CREATE TABLE executions (
   id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES agent_tasks(id),
-  attempt_number INTEGER NOT NULL,
+  issue_id TEXT NOT NULL REFERENCES issues(id),
+  turn_number INTEGER NOT NULL,        -- 第几轮 Turn
+  attempt_number INTEGER NOT NULL,     -- 第几次 Attempt
   status TEXT NOT NULL DEFAULT 'running'
-    CHECK(status IN ('running','completed','failed')),
-  model_used TEXT,
-  token_usage TEXT DEFAULT '{}',
-  tool_calls TEXT DEFAULT '[]',
+    CHECK(status IN ('running', 'completed', 'failed', 'cancelled', 'timeout')),
+  prompt TEXT,                         -- 发给 OpenCode 的完整 prompt
+  result TEXT,                         -- OpenCode 返回的结果
   error_message TEXT,
+  context_snapshot TEXT,               -- JSON: 本轮 TurnContext 快照
+  git_diff_snapshot TEXT,              -- 执行前的 git diff
+  duration_ms INTEGER,                 -- 执行耗时（毫秒）
   started_at TEXT DEFAULT (datetime('now')),
-  finished_at TEXT,
-  duration_ms INTEGER
+  finished_at TEXT
 );
 
-CREATE TABLE memory (
-  id TEXT PRIMARY KEY,
-  category TEXT NOT NULL
-    CHECK(category IN ('project_structure','conventions','lessons_learned','tool_usage')),
-  key TEXT NOT NULL,
-  value TEXT NOT NULL,
-  source TEXT,                   -- 产生该记忆的 task ID
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(category, key)          -- 同一类别同一 key 只保留最新值
+CREATE TABLE execution_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  execution_id TEXT NOT NULL REFERENCES executions(id),
+  level TEXT NOT NULL DEFAULT 'info'
+    CHECK(level IN ('info', 'warn', 'error')),
+  message TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_issues_status ON issues(status);
-CREATE INDEX idx_tasks_status ON agent_tasks(status);
-CREATE INDEX idx_tasks_issue ON agent_tasks(issue_id);
-CREATE INDEX idx_exec_task ON executions(task_id);
-CREATE INDEX idx_memory_category ON memory(category);
+CREATE INDEX idx_exec_issue ON executions(issue_id);
+CREATE INDEX idx_logs_exec ON execution_logs(execution_id);
+```
+
+> **设计说明**：
+> - `execution_logs` 独立成表，避免 `executions.result` 字段膨胀，也方便按时间查询
+> - `context_snapshot` 存 JSON，完整记录每轮输入，用于调试和回放
+> - `duration_ms` 用于超时统计和性能分析
+> - Issue 新增 `waiting_human` 和 `cancelled` 状态
+
+---
+
+## 五、Skill
+
+Skill 是 Agent 完成任务的能力单元。每个 Skill 负责：将 Issue 转化为 prompt → 调用 OpenCode 执行。
+
+MVP 先不限定具体 Skill 类型，Agent Runtime 将 Issue 描述直接构造为 prompt 交给 OpenCode。
+
+```python
+class Skill:
+    """Skill 基类"""
+
+    async def run(self, issue: Issue, cwd: str) -> SkillResult:
+        # 1. 将 Issue 转化为 prompt
+        prompt = self.build_prompt(issue)
+
+        # 2. 调用 OpenCode 执行
+        result = await self.call_opencode(prompt, cwd)
+
+        return SkillResult(
+            success=result.ok,
+            message=result.output,
+        )
+```
+
+> 后续按需扩展具体 Skill（fix_test_failure、write_feature、code_review 等），
+> 每个 Skill 的差异在于 `build_prompt` 的策略不同。
+> 测试验证（pytest）也可以作为 Skill 的一个可选步骤加回来。
+
+---
+
+## 五·一、安全约束
+
+Agent 通过 OpenCode 执行 shell 命令，需要安全边界。
+
+### 命令白名单策略
+
+分三层防护，逐步加固：
+
+**第一层：Prompt 约束（Phase 1 必做）**
+
+在每次发给 OpenCode 的 prompt 中注入安全规则：
+
+```
+## 安全规则
+你只能使用以下命令：
+- git (所有子命令)
+- python / pytest / pip / uv
+- cat / ls / find / grep / head / tail
+- mkdir / cp / mv（仅限项目目录内）
+- echo / printf
+
+严格禁止：
+- rm -rf /、rm -rf ~、rm -rf .
+- curl | bash、wget | sh（禁止远程执行）
+- chmod 777、chown
+- 任何 sudo 命令
+- 任何访问 /etc、/usr、/var 的操作
+- 任何网络请求（除非 Issue 明确要求）
+```
+
+**第二层：执行审计（Phase 1 必做）**
+
+- 每次 Attempt 完成后，从 OpenCode 返回的结果中提取执行过的命令
+- 记录到 `execution_logs` 表
+- 检测是否有违规命令，如果有则标记警告
+
+**第三层：系统级沙箱（Phase 3）**
+
+- Docker 容器隔离
+- 文件系统只读挂载（除工作目录外）
+- 网络限制
+
+### 配置
+
+```toml
+# overseer.toml
+[security]
+allowed_commands = ["git", "python", "pytest", "pip", "uv", "cat", "ls", "find", "grep", "head", "tail", "mkdir", "cp", "mv", "echo"]
+blocked_patterns = ["rm -rf /", "rm -rf ~", "sudo", "curl | bash", "wget | sh", "chmod 777"]
+```
+
+> **务实原则**：Prompt 约束是"软防护"，LLM 可能不完全遵守。
+> 但配合 git 分支隔离 + 审计日志，MVP 阶段足够安全。
+> 真正高风险场景等 Phase 3 上 Docker。
+
+---
+
+## 六、Web UI
+
+基于现有 React + Ant Design 改造，或新起一个极简页面。只需要：
+
+### 一个页面，三个区域
+
+```
+┌─────────────────────────────────────────────┐
+│  Mango · AI Issue Board                      │
+├──────────────────┬──────────────────────────┤
+│                  │                           │
+│  Issue 列表       │  Issue 详情               │
+│                  │                           │
+│  ● [open]  #1    │  标题: 修复登录测试失败    │
+│  ● [running] #2  │  描述: test_login.py ...  │
+│  ● [done] #3     │                           │
+│  ○ [waiting] #4  │  状态: waiting_human       │
+│  ● [failed] #5   │  分支: agent/issue-4       │
+│                  │                           │
+│  [+ 新建 Issue]  │  执行日志:                 │
+│                  │  > Turn 1: 失败 - timeout  │
+│                  │  > Turn 2: 失败 - test err │
+│                  │  > Turn 3: 失败 - same err │
+│                  │                           │
+│                  │  ⚠ AI 执行失败，等待指令    │
+│                  │  ┌─────────────────────┐  │
+│                  │  │ 试试 pytest -x 只跑  │  │
+│                  │  │ 失败的那个测试       │  │
+│                  │  └─────────────────────┘  │
+│                  │  [▶ 重试(附加指令)]        │
+│                  │  [▶ AI 执行]  [取消]       │
+│                  │                           │
+└──────────────────┴──────────────────────────┘
+```
+
+### API
+
+```
+POST   /api/issues              创建 Issue
+GET    /api/issues              列出 Issue (?status=open&status=waiting_human)
+GET    /api/issues/{id}         获取 Issue 详情（含 Execution 历史 + logs）
+POST   /api/issues/{id}/run     触发 AI 执行
+POST   /api/issues/{id}/cancel  取消执行（实际 abort 正在进行的调用）
+POST   /api/issues/{id}/retry   附加指令重试 Body: {"instruction": "..."}
+GET    /api/issues/{id}/logs    获取执行日志（分页）
+GET    /api/health              健康检查
 ```
 
 ---
 
-## 4. 核心流程
+## 七、技术栈
 
-### 4.1 主流程 (MVP 极简)
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| 语言 | Python 3.12+ | AI 生态、subprocess 友好 |
+| HTTP 框架 | FastAPI | 异步、自动 OpenAPI |
+| 数据库 | SQLite (aiosqlite) | 零运维、单文件 |
+| AI 执行层 | OpenCode (serve 模式) | 不造轮子，直接用成熟的 AI 编码代理 |
+| 前端 | React + Ant Design | 复用现有 console/client 基础 |
+| 包管理 | uv | 快 |
 
-```
- Human                  Server             Issue Service     Task Queue      Agent              GitHub
-   │                      │                     │               │              │                   │
-   │── POST /issues ─────▶│── create ──────────▶│               │              │                   │
-   │◀── 201 {issue} ─────│                     │               │              │                   │
-   │                      │                     │               │              │                   │
-   │── POST /issues/:id  │                     │               │              │                   │
-   │   /assign-ai ───────▶│── convert ─────────▶│── enqueue ───▶│              │                   │
-   │◀── 200 {task} ──────│                     │               │              │                   │
-   │                      │                     │               │              │                   │
-   │                      │                     │    ┌── poll ──┤              │                   │
-   │                      │                     │    └────┬─────┤              │                   │
-   │                      │                     │         │────▶│─ runTask() ─▶│                   │
-   │                      │                     │         │     │              │                   │
-   │                      │                     │         │     │  Agent 自己管一切:                │
-   │                      │                     │         │     │  memory_read (加载已有知识)       │
-   │                      │                     │         │     │  → worktree_create               │
-   │                      │                     │         │     │  → 写代码 (file_write)           │
-   │                      │                     │         │     │  → git commit                    │
-   │                      │                     │         │     │  → git push ─▶│── create PR ────▶│
-   │                      │                     │         │     │  → worktree_cleanup              │
-   │                      │                     │         │     │  → memory_extract (提取经验记忆)  │
-   │                      │                     │         │     │              │                   │
-   │                      │                     │◀─ done ─│◀────│              │                   │
-   │                      │                     │ status:  │     │              │                   │
-   │                      │                     │ in_review│     │              │                   │
-   │                      │                     │         │     │              │                   │
-   │── GET /issues/:id ──▶│── read ────────────▶│  (轮询查状态)  │              │                   │
-   │◀── {status:in_review}│                     │               │              │                   │
-   │                      │                     │               │              │                   │
-   │── POST /issues/:id  │                     │               │              │                   │
-   │   /approve ─────────▶│── close ───────────▶│               │              │── merge PR ──────▶│
-   │◀── 200 ─────────────│                     │               │              │                   │
-```
+### 环境变量
 
-### 4.2 失败处理 (极简)
-
-```
-Agent 执行失败
-    │
-    ├── retryCount < maxRetries?
-    │   ├── 是 → retryCount++, 重新入队
-    │   └── 否 → Task 标记 failed, Issue 标记 failed
-    │
-    └── 人类：
-        ├── PATCH /issues/:id 修改描述后重新 assign-ai
-        └── 或放弃
-```
+| 变量 | 用途 |
+|------|------|
+| `OPENAI_API_KEY` 或对应 LLM Key | OpenCode 使用的 LLM API |
+| `OPENCODE_URL` | OpenCode serve 地址（默认 `http://localhost:4096`） |
 
 ---
 
-## 5. REST API (MVP)
+## 八、目录结构
 
 ```
-Issues:
-  POST   /api/issues              创建 Issue
-  GET    /api/issues              列出所有 Issue (可选 ?status=open)
-  GET    /api/issues/:id          获取 Issue 详情 (含关联 Task 状态)
-  PATCH  /api/issues/:id          更新 Issue (title/description/type)
-  POST   /api/issues/:id/assign-ai   分配给 AI (触发转换 + 入队)
-  POST   /api/issues/:id/approve     审查通过 (merge PR + 关闭)
-  POST   /api/issues/:id/reject      审查不通过 (回到 open)
-
-Agent Tasks (只读):
-  GET    /api/tasks               列出所有 Task
-  GET    /api/tasks/:id           获取 Task 详情 (含 Execution 历史)
-  POST   /api/tasks/:id/cancel    取消执行中的 Task
-
-System:
-  GET    /api/health              健康检查
-  GET    /api/status              Agent Runtime 状态 (当前任务、工具使用统计)
-```
-
----
-
-## 6. 配置 (MVP 极简)
-
-```json5
-// overseer.config.json5
-{
-  port: 18800,
-
-  agent: {
-    model: {
-      primary: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
-      fallback: [                  // 模型降级链
-        { provider: "openai", model: "gpt-4o" },
-      ],
-      maxTokens: 8192,
-      temperature: 0,
-    },
-    maxTurns: 50,                  // Agent 循环最大轮次
-    tools: [
-      "worktree_create", "worktree_cleanup",
-      "file_read", "file_write", "file_search",
-      "shell_exec", "git_ops", "git_push", "github_pr",
-      "memory_read", "memory_extract",     // 任务级经验记忆
-      "claude_code",               // 子任务委托工具
-    ],
-    systemPrompt: "You are an expert software engineer...",
-
-    // claude_code 工具配置
-    claudeCode: {
-      command: "claude",             // CLI 路径，默认从 PATH 查找
-      maxTurns: 30,                  // 子任务最大对话轮次
-    },
-  },
-
-  // 模型提供者
-  models: {
-    anthropic: {
-      apiKey: "$ANTHROPIC_API_KEY",
-    },
-    openai: {
-      apiKey: "$OPENAI_API_KEY",
-    },
-  },
-
-  github: {
-    token: "$GITHUB_TOKEN",
-    repo: "owner/repo",
-  },
-
-  scheduler: {
-    pollInterval: 5000,
-    maxRetries: 3,
-    timeoutMinutes: 30,
-  },
-
-  database: "./data/overseer.db",
-}
-```
-
-不做 Zod 验证（MVP），启动时简单校验必填字段即可。
-
----
-
-## 7. 目录结构 (MVP 扁平化)
-
-```
-claude-overseer/
-├── package.json
-├── tsconfig.json
-├── overseer.config.json5
+mango/
+├── pyproject.toml
+├── overseer.toml                  # 配置（含 security、context）
+├── README.md
 │
-├── src/
-│   ├── index.ts                 # 入口：启动 HTTP server + scheduler
+├── src/mango/
+│   ├── __init__.py
+│   ├── main.py                    # uvicorn 启动
 │   │
-│   ├── server/                  # HTTP 层
-│   │   ├── app.ts               # Hono/Fastify app 实例
-│   │   └── routes/
-│   │       ├── issues.ts        # /api/issues/* 路由
-│   │       ├── tasks.ts         # /api/tasks/* 路由 (只读)
-│   │       └── system.ts        # /api/health, /api/agents
+│   ├── server/
+│   │   ├── app.py                 # FastAPI 实例
+│   │   └── routes.py              # 所有 API（一个文件够了）
 │   │
-│   ├── issue/                   # LAYER 1
-│   │   ├── issue.service.ts     # Issue CRUD + 状态机
-│   │   └── converter.ts         # Issue → AgentTask (1:1)
+│   ├── agent/
+│   │   ├── runtime.py             # runTask → runTurn → runAttempt
+│   │   ├── context.py             # TurnContext 构建 + 截断
+│   │   ├── safety.py              # Prompt 安全约束 + 执行审计
+│   │   └── opencode_client.py     # OpenCode HTTP 客户端（含超时 + cancel）
 │   │
-│   ├── engine/                  # LAYER 2: 调度
-│   │   ├── queue.ts             # 内存优先级队列 + SQLite 持久化
-│   │   ├── scheduler.ts         # 轮询调度器
-│   │   └── runner.ts            # runTask(): 调 AgentRuntime → 更新状态 (超薄)
+│   ├── skills/
+│   │   └── base.py                # Skill 基类（MVP 直接用基类）
 │   │
-│   ├── agent/                   # Agent Runtime (唯一的运行时)
-│   │   ├── runtime.ts           # AgentRuntime: runTask → runTurn → runAttempt
-│   │   └── model-provider.ts    # LLM API 统一调用层 (Anthropic/OpenAI/...)
+│   ├── db/
+│   │   ├── connection.py          # SQLite 连接
+│   │   ├── migrations/
+│   │   │   └── 001_init.sql
+│   │   └── repos.py               # issue_repo + execution_repo + log_repo
 │   │
-│   ├── tools/                   # 工具注册表 + 所有工具
-│   │   ├── registry.ts          # 工具注册 + 调度
-│   │   ├── worktree-create.ts   # git worktree add
-│   │   ├── worktree-cleanup.ts  # git worktree remove
-│   │   ├── file-read.ts
-│   │   ├── file-write.ts
-│   │   ├── file-search.ts
-│   │   ├── shell-exec.ts
-│   │   ├── git-ops.ts
-│   │   ├── git-push.ts
-│   │   ├── github-pr.ts
-│   │   ├── memory-read.ts         # 读取跨任务积累的项目知识
-│   │   ├── memory-extract.ts      # 结构化提取经验记忆并保存
-│   │   └── claude-code.ts       # 委托子任务给 Claude Code CLI
-│   │
-│   └── db/                      # 数据库
-│       ├── connection.ts        # SQLite 连接 (better-sqlite3)
-│       ├── migrations/          # SQL 迁移
-│       └── repos/
-│           ├── issue.repo.ts
-│           ├── task.repo.ts
-│           ├── execution.repo.ts
-│           └── memory.repo.ts
+│   └── models.py                  # Pydantic 模型（含 TurnContext）
 │
-└── test/
-    ├── issue.test.ts
-    ├── converter.test.ts
-    ├── queue.test.ts
-    ├── runtime.test.ts
-    ├── tools.test.ts
-    └── runner.test.ts
+├── tests/
+│   ├── test_runtime.py
+│   ├── test_context.py            # TurnContext 构建 + 截断测试
+│   ├── test_safety.py             # 安全约束测试
+│   └── test_api.py
+│
+└── web/                           # 前端（后续独立或复用 console/client）
+    └── ...
 ```
 
-**关键简化**：不再是 monorepo，单 package 扁平结构。
+**对比 RE_ROADMAP 的目录结构**：从 30+ 个 Python 文件缩减到 ~13 个。
 
 ---
 
-## 8. ROADMAP
+## 九、配置
 
-### MVP (v0.1) — 当前目标
+```toml
+# overseer.toml
 
-**目标**：能跑通一条完整链路：创建 Issue → Agent 写代码 → 创建 PR
+[server]
+port = 18800
 
-- [ ] HTTP Server + REST API (Issue CRUD)
-- [ ] SQLite 存储 (4 张表: issues, agent_tasks, executions, memory)
-- [ ] Issue → AgentTask 转换 (1:1)
-- [ ] 内存任务队列 + 轮询调度器
-- [ ] Agent Runtime (唯一运行时: runTask → runTurn → runAttempt)
-- [ ] 内置工具 (worktree_create/cleanup, file_read/write/search, shell_exec, git_ops, git_push, github_pr, memory_read/extract, claude_code)
-- [ ] Memory — 任务级经验记忆 (KV 存储，memory_read + memory_extract 工具，Agent 自主调用)
-- [ ] ModelProvider 统一 LLM 调用层 (Anthropic API)
-- [ ] Runner: 调 Agent Runtime → 更新状态 (超薄)
-- [ ] 失败重试 (简单 retryCount)
+[agent]
+max_turns = 3                       # 每个 Issue 最多重试 3 次
+task_timeout = 1800                 # 单个 Task 总超时（秒）
 
-### v0.2 — 可用性
+[opencode]
+url = "http://localhost:4096"       # OpenCode serve 地址
+timeout = 300                       # 单次 Attempt 调用超时（秒）
 
-- [ ] Web UI (React, Issue 列表 + 详情页 + Agent 日志)
-- [ ] SSE 实时推送 (替代轮询)
-- [ ] Zod 配置校验
-- [ ] Issue 评论系统 (人工评论 + Agent 自动回写)
-- [ ] ModelProvider 扩展 (OpenAI, Gemini)
-- [ ] 模型降级 (primary → fallback)
-- [ ] 标签 (Label) 过滤
+[project]
+repo_path = "."                     # 目标仓库本地路径
+default_branch = "main"
 
-### v1.0 — 完整单用户版
+[database]
+path = "./data/mango.db"
 
-- [ ] JWT 认证
-- [ ] WebSocket 实时日志流
-- [ ] 1 Issue → N Task 拆分 + 依赖 DAG
-- [ ] Milestone 里程碑
-- [ ] 配置热重载
-- [ ] FTS5 代码库全文索引 (升级 Memory 为向量化知识检索)
-- [ ] 更多工具 (browser, test_runner)
+[security]
+allowed_commands = ["git", "python", "pytest", "pip", "uv", "cat", "ls", "find", "grep", "head", "tail", "mkdir", "cp", "mv", "echo"]
+blocked_patterns = ["rm -rf /", "rm -rf ~", "sudo", "curl | bash", "wget | sh", "chmod 777"]
 
-### v2.0 — 多用户 / 生产级
+[context]
+max_git_diff_lines = 2000          # git diff 截断行数
+max_result_chars = 5000            # last_result 截断字符数
+```
 
-- [ ] 多用户角色权限
-- [ ] 审计日志 (AuditLog)
-- [ ] 多仓库支持
-- [ ] 通道扩展 (Telegram / Slack)
-- [ ] 插件系统 (第三方工具注册)
-- [ ] Docker 沙箱 (workspace 隔离升级，作为新 Agent 工具)
-- [ ] Prometheus 指标
+---
+
+## 十、ROADMAP
+
+### Phase 0 — 基础骨架 (1 天)
+
+- [ ] pyproject.toml + uv 初始化
+- [ ] FastAPI 骨架 + `/api/health`
+- [ ] SQLite 建表（3 张表：issues, executions, execution_logs）
+- [ ] Pydantic 模型（含 TurnContext）
+- [ ] overseer.toml 配置加载（含 security、context 配置）
+- [ ] 验收：`uv run python -m mango` 启动，`/api/health` 返回 200
+
+### Phase 1 — Agent Runtime + 核心机制 (2-3 天)
+
+- [ ] OpenCode HTTP 客户端封装（创建会话 + 发送 prompt + 获取结果）
+- [ ] Agent Runtime: runTask → runTurn → runAttempt
+- [ ] TurnContext 构建（Issue + last_result + last_error + git_diff + history）
+- [ ] git_diff 截断策略（超 2000 行截断 + [truncated] 提示）
+- [ ] Skill 基类（基于 TurnContext 构造 prompt → OpenCode）
+- [ ] 超时机制：Attempt 300s + Task 1800s
+- [ ] cancel 机制：asyncio.Event cancel token + HTTP abort
+- [ ] Prompt 安全约束注入（命令白名单规则）
+- [ ] 执行审计：从结果中提取命令记录到 execution_logs
+- [ ] git 分支管理（checkout -b / commit）
+- [ ] Issue CRUD API
+- [ ] `/api/issues/{id}/run` 触发执行
+- [ ] `/api/issues/{id}/cancel` 取消执行（实际 abort）
+- [ ] `/api/issues/{id}/retry` 附加指令重试（waiting_human → running）
+- [ ] execution_logs 写入 + 查询 API
+- [ ] 验收：创建 Issue → AI 执行 → 失败 → retry with instruction → 完成 → 代码提交到分支
+
+### Phase 2 — Web UI (2-3 天)
+
+- [ ] Issue 列表页（状态筛选，含 waiting_human 状态）
+- [ ] Issue 详情页（执行日志 + TurnContext 快照查看）
+- [ ] 创建 Issue 表单
+- [ ] "AI 执行" 按钮 + 状态轮询
+- [ ] "取消" 按钮（调用 cancel API）
+- [ ] 失败后 "附加指令重试" 交互（文本框 + 重试按钮）
+- [ ] 验收：用户在浏览器上完成 创建 → AI 执行 → 失败 → 附加指令重试 → 查看结果 全流程
+
+### Phase 3 — 安全加固 + 打磨 (后续)
+
+- [ ] Docker 沙箱隔离（文件系统只读 + 网络限制）
+- [ ] Memory 系统（跨任务积累项目知识）
+- [ ] 执行日志实时推送（SSE）
+- [ ] 多模型支持
+- [ ] 命令审计仪表盘（统计危险命令触发频率）
+
+**目标代码量**：< 800 行 Python + 1 个前端页面。
+
+**目标交付时间**：Phase 0 + Phase 1 = 4-5 天跑通核心链路。
