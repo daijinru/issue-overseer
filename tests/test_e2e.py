@@ -5,12 +5,17 @@ Validates the ROADMAP Phase 1 acceptance criteria:
 
 Requires: a working ``opencode`` binary on PATH with a configured provider.
 Run with: uv run pytest tests/test_e2e.py -v -s -m e2e
+
+Test fixture source files live in tests/fixtures/e2e_repo/:
+  - calc.py       — buggy calculator (return a - b)
+  - test_calc.py  — tests that fail against the bug
 """
 
 from __future__ import annotations
 
-import asyncio
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +24,8 @@ from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
 from mango.models import IssueCreate, IssueStatus
 
 pytestmark = pytest.mark.e2e
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "e2e_repo"
 
 
 def _opencode_available() -> bool:
@@ -42,39 +49,11 @@ skipif_no_opencode = pytest.mark.skipif(
 # ── Fixtures ────────────────────────────────────────────────────────
 
 
-BUGGY_CODE = '''\
-"""A simple calculator module with a bug."""
-
-
-def add(a, b):
-    """Add two numbers."""
-    return a - b  # BUG: should be a + b
-'''
-
-TEST_CODE = '''\
-"""Tests for the calculator module."""
-
-from calc import add
-
-
-def test_add_positive():
-    assert add(2, 3) == 5
-
-
-def test_add_negative():
-    assert add(-1, -2) == -3
-
-
-def test_add_zero():
-    assert add(0, 0) == 0
-'''
-
-
 @pytest.fixture()
 def e2e_git_repo(tmp_path):
-    """Create a git repo with a buggy Python file and a failing test."""
+    """Copy fixture files into a fresh git repo for testing."""
     repo = tmp_path / "e2e_repo"
-    repo.mkdir()
+    shutil.copytree(FIXTURES_DIR, repo)
 
     # Init git
     subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
@@ -86,10 +65,6 @@ def e2e_git_repo(tmp_path):
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True, check=True,
     )
-
-    # Write buggy code + test
-    (repo / "calc.py").write_text(BUGGY_CODE)
-    (repo / "test_calc.py").write_text(TEST_CODE)
 
     # Initial commit
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
