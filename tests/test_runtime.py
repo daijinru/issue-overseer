@@ -14,17 +14,14 @@ from mango.models import IssueCreate, IssueStatus
 
 
 class MockOpenCodeClient:
-    """Replaces OpenCodeClient for testing without a real OpenCode server."""
+    """Replaces OpenCodeClient for testing without a real opencode binary."""
 
     def __init__(self, responses: list):
         self.responses = responses
         self.call_count = 0
         self.prompts_received: list[str] = []
 
-    async def create_session(self) -> str:
-        return "mock-session-id"
-
-    async def send_prompt(self, session_id, prompt, *, cancel_event=None):
+    async def run_prompt(self, prompt, *, cwd=".", cancel_event=None):
         self.prompts_received.append(prompt)
         if self.call_count >= len(self.responses):
             raise Exception("No more mock responses")
@@ -122,12 +119,12 @@ async def test_run_task_all_turns_fail(mock_runtime):
 async def test_run_task_cancel(mock_runtime):
     runtime = mock_runtime
 
-    async def slow_send(*args, **kwargs):
+    async def slow_run(*args, **kwargs):
         await asyncio.sleep(10)
         return "done"
 
     mock_client = MockOpenCodeClient([])
-    mock_client.send_prompt = slow_send
+    mock_client.run_prompt = slow_run
     runtime.client = mock_client
     runtime.skill.client = mock_client
 
@@ -181,13 +178,12 @@ async def test_run_task_timeout(mock_runtime):
     # Set very short timeout
     object.__setattr__(runtime.settings.opencode, "timeout", 0.1)
 
-    async def slow_send(*args, **kwargs):
+    async def slow_run(*args, **kwargs):
         await asyncio.sleep(10)
         return "done"
 
     mock_client = MockOpenCodeClient([])
-    mock_client.send_prompt = slow_send
-    mock_client.create_session = MockOpenCodeClient([]).create_session
+    mock_client.run_prompt = slow_run
     runtime.client = mock_client
     runtime.skill.client = mock_client
 

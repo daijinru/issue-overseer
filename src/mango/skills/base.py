@@ -14,7 +14,7 @@ from mango.models import TurnContext
 class BaseSkill(ABC):
     @abstractmethod
     async def execute(self, ctx: TurnContext, cwd: str, *,
-                      session_id: str, cancel_event: asyncio.Event | None = None) -> str:
+                      cancel_event: asyncio.Event | None = None) -> str:
         ...
 
 
@@ -23,9 +23,9 @@ class GenericSkill(BaseSkill):
         self.client = client
 
     async def execute(self, ctx: TurnContext, cwd: str, *,
-                      session_id: str, cancel_event: asyncio.Event | None = None) -> str:
+                      cancel_event: asyncio.Event | None = None) -> str:
         prompt = self._build_prompt(ctx)
-        return await self.client.send_prompt(session_id, prompt, cancel_event=cancel_event)
+        return await self.client.run_prompt(prompt, cwd=cwd, cancel_event=cancel_event)
 
     def _build_prompt(self, ctx: TurnContext) -> str:
         settings = get_settings()

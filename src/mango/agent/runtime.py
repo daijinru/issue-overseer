@@ -26,7 +26,7 @@ class AgentRuntime:
         self.exec_repo = ExecutionRepo()
         self.log_repo = ExecutionLogRepo()
         self.client = OpenCodeClient(
-            base_url=self.settings.opencode.url,
+            command=self.settings.opencode.command,
             timeout=self.settings.opencode.timeout,
         )
         self.skill = GenericSkill(self.client)
@@ -66,12 +66,6 @@ class AgentRuntime:
         branch_name = f"agent/{issue_id[:8]}"
         await self._git_create_branch(branch_name)
         await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
-        try:
-            session_id = await self.client.create_session()
-        except Exception as e:
-            logger.error("Failed to create OpenCode session: %s", e)
-            await self.issue_repo.update_status(issue_id, IssueStatus.failed)
-            return
         max_turns = self.settings.agent.max_turns
         task_timeout = self.settings.agent.task_timeout
         last_result: str | None = None
@@ -86,7 +80,7 @@ class AgentRuntime:
                         return
                     turn_result = await self._run_turn(
                         issue=issue, turn_number=turn, max_turns=max_turns,
-                        session_id=session_id, cancel_event=cancel_event,
+                        cancel_event=cancel_event,
                         last_result=last_result, last_error=last_error,
                         execution_history=execution_history,
                     )
@@ -111,7 +105,7 @@ class AgentRuntime:
         else:
             await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
 
-    async def _run_turn(self, *, issue, turn_number, max_turns, session_id,
+    async def _run_turn(self, *, issue, turn_number, max_turns,
                         cancel_event, last_result, last_error, execution_history) -> dict:
         git_diff = await self._get_git_diff()
         fresh_issue = await self.issue_repo.get(issue.id)
@@ -130,17 +124,17 @@ class AgentRuntime:
         )
         return await self._run_attempt(
             execution_id=execution_id, ctx=ctx,
-            session_id=session_id, cancel_event=cancel_event,
+            cancel_event=cancel_event,
         )
 
-    async def _run_attempt(self, *, execution_id, ctx, session_id, cancel_event) -> dict:
+    async def _run_attempt(self, *, execution_id, ctx, cancel_event) -> dict:
         start = time.monotonic()
         attempt_timeout = self.settings.opencode.timeout
         cwd = self.settings.project.repo_path
         try:
             async with asyncio.timeout(attempt_timeout):
                 result_text = await self.skill.execute(
-                    ctx, cwd, session_id=session_id, cancel_event=cancel_event
+                    ctx, cwd, cancel_event=cancel_event
                 )
             duration_ms = int((time.monotonic() - start) * 1000)
             await self._audit_commands(execution_id, result_text)

@@ -9,7 +9,6 @@ dependencies = [
     "aiosqlite>=0.21",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]

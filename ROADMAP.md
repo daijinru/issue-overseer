@@ -494,21 +494,21 @@ max_result_chars = 5000            # last_result 截断字符数
 
 ### Phase 1 — Agent Runtime + 核心机制 (2-3 天)
 
-- [ ] OpenCode HTTP 客户端封装（创建会话 + 发送 prompt + 获取结果）
-- [ ] Agent Runtime: runTask → runTurn → runAttempt
-- [ ] TurnContext 构建（Issue + last_result + last_error + git_diff + history）
-- [ ] git_diff 截断策略（超 2000 行截断 + [truncated] 提示）
-- [ ] Skill 基类（基于 TurnContext 构造 prompt → OpenCode）
-- [ ] 超时机制：Attempt 300s + Task 1800s
-- [ ] cancel 机制：asyncio.Event cancel token + HTTP abort
-- [ ] Prompt 安全约束注入（命令白名单规则）
-- [ ] 执行审计：从结果中提取命令记录到 execution_logs
-- [ ] git 分支管理（checkout -b / commit）
-- [ ] Issue CRUD API
-- [ ] `/api/issues/{id}/run` 触发执行
-- [ ] `/api/issues/{id}/cancel` 取消执行（实际 abort）
-- [ ] `/api/issues/{id}/retry` 附加指令重试（waiting_human → running）
-- [ ] execution_logs 写入 + 查询 API
+- [x] OpenCode HTTP 客户端封装（创建会话 + 发送 prompt + 获取结果）
+- [x] Agent Runtime: runTask → runTurn → runAttempt
+- [x] TurnContext 构建（Issue + last_result + last_error + git_diff + history）
+- [x] git_diff 截断策略（超 2000 行截断 + [truncated] 提示）
+- [x] Skill 基类（基于 TurnContext 构造 prompt → OpenCode）
+- [x] 超时机制：Attempt 300s + Task 1800s
+- [x] cancel 机制：asyncio.Event cancel token + HTTP abort
+- [x] Prompt 安全约束注入（命令白名单规则）
+- [x] 执行审计：从结果中提取命令记录到 execution_logs
+- [x] git 分支管理（checkout -b / commit）
+- [x] Issue CRUD API
+- [x] `/api/issues/{id}/run` 触发执行
+- [x] `/api/issues/{id}/cancel` 取消执行（实际 abort）
+- [x] `/api/issues/{id}/retry` 附加指令重试（waiting_human → running）
+- [x] execution_logs 写入 + 查询 API
 - [ ] 验收：创建 Issue → AI 执行 → 失败 → retry with instruction → 完成 → 代码提交到分支
 
 ### Phase 2 — Web UI (2-3 天)

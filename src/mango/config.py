@@ -23,7 +23,7 @@ class AgentConfig(BaseModel):
 
 
 class OpenCodeConfig(BaseModel):
-    url: str = "http://localhost:4096"
+    command: str = "opencode"
     timeout: int = 300
 
 

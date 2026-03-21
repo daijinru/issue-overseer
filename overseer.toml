@@ -6,7 +6,7 @@ max_turns = 3
 task_timeout = 1800
 
 [opencode]
-url = "http://localhost:4096"
+command = "opencode"
 timeout = 300
 
 [project]
