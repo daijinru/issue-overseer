@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    "pytest-timeout>=2.3",
     "httpx>=0.28",
 ]
 
@@ -28,3 +29,6 @@ packages = ["src/mango"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end integration tests (require real opencode CLI)",
+]

@@ -33,7 +33,7 @@ class OpenCodeClient:
             raise asyncio.CancelledError("Task cancelled before running opencode")
 
         proc = await asyncio.create_subprocess_exec(
-            self.command, "run", "--format", "json", prompt,
+            self.command, "run", "--dir", cwd, "--format", "json", prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,

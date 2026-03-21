@@ -11,8 +11,14 @@
 Agent Runtime 负责决策和循环控制（做什么、重试几次、什么时候停）。
 OpenCode 负责实际的代码修改和命令执行（读代码、改代码、跑命令）。
 
-Runtime 不自己实现 file_read / file_write / shell_exec 等原子操作，
-这些全部交给 OpenCode（通过 `opencode serve` HTTP API 调用）。
+**职责边界**：
+
+| 谁做 | 做什么 | 为什么 |
+|------|--------|--------|
+| **Runtime** | git branch / commit / diff、DB 读写、状态机流转、超时控制 | 流程控制，必须 100% 确定性 |
+| **OpenCode** | 读代码、改代码、跑 pytest、搜索文件 | AI 编码能力，允许不确定性 |
+
+分界线：**确定性操作 Runtime 自己干，需要创造力的操作交给 OpenCode（通过 `opencode run` CLI 子进程调用）。**
 
 ### 2. Skill 是 Agent 的能力单元
 
@@ -60,7 +66,7 @@ AI 重试全部失败后，Issue 进入 `waiting_human` 状态，用户可附加
 | 语言 | Python 3.12+ | AI 生态、subprocess 友好 |
 | HTTP 框架 | FastAPI | 异步、自动 OpenAPI |
 | 数据库 | SQLite (aiosqlite) | 零运维、单文件 |
-| AI 执行层 | OpenCode (serve 模式) | 不造轮子，直接用成熟的 AI 编码代理 |
+| AI 执行层 | OpenCode (CLI 子进程) | 不造轮子，直接用成熟的 AI 编码代理 |
 | 前端 | React + Ant Design | 复用现有基础 |
 | 包管理 | uv | 快 |
 | 配置 | pydantic-settings + TOML | 类型安全 |
@@ -78,8 +84,8 @@ Agent Runtime (核心)
    ├── 超时控制（Attempt 300s / Task 1800s / 用户随时 cancel）
    ├── Skill 调用（基于 TurnContext 构造 prompt + 安全约束注入）
    └── git 分支 + commit
-   ↓ HTTP API
-OpenCode (serve 模式, 常驻)
+   ↓ subprocess (opencode run)
+OpenCode (CLI, 按需调用)
    ↓
 SQLite (issues + executions + execution_logs, 3 张表)
 ```

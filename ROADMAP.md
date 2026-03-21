@@ -509,7 +509,7 @@ max_result_chars = 5000            # last_result 截断字符数
 - [x] `/api/issues/{id}/cancel` 取消执行（实际 abort）
 - [x] `/api/issues/{id}/retry` 附加指令重试（waiting_human → running）
 - [x] execution_logs 写入 + 查询 API
-- [ ] 验收：创建 Issue → AI 执行 → 失败 → retry with instruction → 完成 → 代码提交到分支
+- [x] 验收：创建 Issue → AI 执行 → 失败 → retry with instruction → 完成 → 代码提交到分支
 
 ### Phase 2 — Web UI (2-3 天)
 
