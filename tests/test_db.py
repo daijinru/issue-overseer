@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from mango.db.connection import init_db, get_db_connection
-from mango.db.repos import IssueRepo
-from mango.models import IssueCreate
+from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
+from mango.models import ExecutionStatus, IssueCreate, LogLevel
 
 
 @pytest.mark.asyncio
@@ -60,3 +62,75 @@ async def test_issue_get_nonexistent(initialized_db):
     repo = IssueRepo()
     result = await repo.get("nonexistent-id")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_issue_update_fields(initialized_db):
+    """update_fields should update specific fields."""
+    repo = IssueRepo()
+    issue = await repo.create(IssueCreate(title="Update me", description="desc"))
+    await repo.update_fields(issue.id, branch_name="agent/test", human_instruction="try again")
+    updated = await repo.get(issue.id)
+    assert updated.branch_name == "agent/test"
+    assert updated.human_instruction == "try again"
+
+
+@pytest.mark.asyncio
+async def test_execution_create_and_list(initialized_db):
+    """Create an Execution and list by issue."""
+    issue_repo = IssueRepo()
+    issue = await issue_repo.create(IssueCreate(title="Exec test"))
+    exec_repo = ExecutionRepo()
+    execution_id = str(uuid.uuid4())
+    execution = await exec_repo.create(
+        execution_id=execution_id, issue_id=issue.id,
+        turn_number=1, attempt_number=1, prompt="test prompt",
+    )
+    assert execution.id == execution_id
+    assert execution.issue_id == issue.id
+
+    executions = await exec_repo.list_by_issue(issue.id)
+    assert len(executions) == 1
+    assert executions[0].id == execution_id
+
+
+@pytest.mark.asyncio
+async def test_execution_finish_updates_status(initialized_db):
+    """finish() should update execution status and result."""
+    issue_repo = IssueRepo()
+    issue = await issue_repo.create(IssueCreate(title="Finish test"))
+    exec_repo = ExecutionRepo()
+    execution_id = str(uuid.uuid4())
+    await exec_repo.create(
+        execution_id=execution_id, issue_id=issue.id,
+        turn_number=1, attempt_number=1,
+    )
+    await exec_repo.finish(
+        execution_id, status=ExecutionStatus.completed,
+        result="Success!", duration_ms=1234,
+    )
+    executions = await exec_repo.list_by_issue(issue.id)
+    assert executions[0].status == ExecutionStatus.completed
+    assert executions[0].result == "Success!"
+    assert executions[0].duration_ms == 1234
+
+
+@pytest.mark.asyncio
+async def test_execution_log_append_and_list(initialized_db):
+    """append() and list_by_execution() should work."""
+    issue_repo = IssueRepo()
+    issue = await issue_repo.create(IssueCreate(title="Log test"))
+    exec_repo = ExecutionRepo()
+    execution_id = str(uuid.uuid4())
+    await exec_repo.create(
+        execution_id=execution_id, issue_id=issue.id,
+        turn_number=1, attempt_number=1,
+    )
+    log_repo = ExecutionLogRepo()
+    await log_repo.append(execution_id, LogLevel.info, "test message")
+    await log_repo.append(execution_id, LogLevel.error, "error message")
+
+    logs = await log_repo.list_by_execution(execution_id)
+    assert len(logs) == 2
+    assert logs[0].message == "test message"
+    assert logs[1].level == LogLevel.error

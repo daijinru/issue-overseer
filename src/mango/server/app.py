@@ -14,9 +14,13 @@ from mango.server.routes import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: initialize DB on startup."""
+    """Application lifespan: initialize DB and Agent Runtime on startup."""
     await init_db()
+    from mango.agent.runtime import AgentRuntime
+    app.state.runtime = AgentRuntime()
     yield
+    if hasattr(app.state, "runtime"):
+        await app.state.runtime.client.close()
 
 
 def create_app() -> FastAPI:

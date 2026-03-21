@@ -1,0 +1,18 @@
+# Runtime data
+data/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

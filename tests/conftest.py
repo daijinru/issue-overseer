@@ -21,6 +21,7 @@ def tmp_settings(tmp_path, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr("mango.config.get_settings", lambda: settings)
     monkeypatch.setattr("mango.db.connection.get_settings", lambda: settings)
+    monkeypatch.setattr("mango.db.repos.get_db_connection", _make_get_db_connection(settings))
     monkeypatch.setattr("mango.server.routes.get_db_connection", _make_get_db_connection(settings))
 
     yield settings
