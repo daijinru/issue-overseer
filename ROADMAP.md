@@ -485,12 +485,12 @@ max_result_chars = 5000            # last_result 截断字符数
 
 ### Phase 0 — 基础骨架 (1 天)
 
-- [ ] pyproject.toml + uv 初始化
-- [ ] FastAPI 骨架 + `/api/health`
-- [ ] SQLite 建表（3 张表：issues, executions, execution_logs）
-- [ ] Pydantic 模型（含 TurnContext）
-- [ ] overseer.toml 配置加载（含 security、context 配置）
-- [ ] 验收：`uv run python -m mango` 启动，`/api/health` 返回 200
+- [x] pyproject.toml + uv 初始化
+- [x] FastAPI 骨架 + `/api/health`
+- [x] SQLite 建表（3 张表：issues, executions, execution_logs）
+- [x] Pydantic 模型（含 TurnContext）
+- [x] overseer.toml 配置加载（含 security、context 配置）
+- [x] 验收：`uv run python -m mango` 启动，`/api/health` 返回 200
 
 ### Phase 1 — Agent Runtime + 核心机制 (2-3 天)
 

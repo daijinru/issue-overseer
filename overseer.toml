@@ -1,0 +1,25 @@
+[server]
+port = 18800
+
+[agent]
+max_turns = 3
+task_timeout = 1800
+
+[opencode]
+url = "http://localhost:4096"
+timeout = 300
+
+[project]
+repo_path = "."
+default_branch = "main"
+
+[database]
+path = "./data/mango.db"
+
+[security]
+allowed_commands = ["git", "python", "pytest", "pip", "uv", "cat", "ls", "find", "grep", "head", "tail", "mkdir", "cp", "mv", "echo"]
+blocked_patterns = ["rm -rf /", "rm -rf ~", "sudo", "curl | bash", "wget | sh", "chmod 777"]
+
+[context]
+max_git_diff_lines = 2000
+max_result_chars = 5000
