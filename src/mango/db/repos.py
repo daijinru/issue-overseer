@@ -17,6 +17,11 @@ from mango.models import (
 )
 
 
+_ALLOWED_ISSUE_FIELDS = frozenset({
+    "branch_name", "human_instruction", "pr_url", "workspace", "spec",
+})
+
+
 class IssueRepo:
     """Repository for the ``issues`` table."""
 
@@ -73,6 +78,9 @@ class IssueRepo:
     async def update_fields(self, issue_id: str, **fields: object) -> None:
         if not fields:
             return
+        invalid = set(fields) - _ALLOWED_ISSUE_FIELDS
+        if invalid:
+            raise ValueError(f"Disallowed field(s): {invalid}")
         set_clauses = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values()) + [issue_id]
         async with get_db_connection() as db:

@@ -134,3 +134,22 @@ async def test_execution_log_append_and_list(initialized_db):
     assert len(logs) == 2
     assert logs[0].message == "test message"
     assert logs[1].level == LogLevel.error
+
+
+@pytest.mark.asyncio
+async def test_update_fields_rejects_invalid_field(initialized_db):
+    """update_fields should reject field names not in the whitelist."""
+    repo = IssueRepo()
+    issue = await repo.create(IssueCreate(title="Whitelist test", description="desc"))
+    with pytest.raises(ValueError, match="Disallowed field"):
+        await repo.update_fields(issue.id, status="hacked")
+
+
+@pytest.mark.asyncio
+async def test_update_fields_pr_url(initialized_db):
+    """update_fields should accept pr_url (in the whitelist)."""
+    repo = IssueRepo()
+    issue = await repo.create(IssueCreate(title="PR URL test", description="desc"))
+    await repo.update_fields(issue.id, pr_url="https://github.com/test/repo/pull/1")
+    updated = await repo.get(issue.id)
+    assert updated.pr_url == "https://github.com/test/repo/pull/1"

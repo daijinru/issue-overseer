@@ -33,11 +33,36 @@ class AgentRuntime:
         self._cancel_tokens: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
 
+    async def recover_from_restart(self) -> None:
+        """Recover issues stuck in 'running' after a service restart.
+
+        Sets them to 'waiting_human' and logs the interruption.
+        """
+        stuck_issues = await self.issue_repo.list_all(status=IssueStatus.running)
+        for issue in stuck_issues:
+            logger.warning("Recovering stuck issue %s (%s)", issue.id, issue.title)
+            await self.issue_repo.update_status(issue.id, IssueStatus.waiting_human)
+            # Find the latest execution for this issue and log the interruption
+            executions = await self.exec_repo.list_by_issue(issue.id)
+            if executions:
+                latest_exec = executions[-1]
+                # Mark running executions as failed
+                if latest_exec.status == ExecutionStatus.running:
+                    await self.exec_repo.finish(
+                        latest_exec.id,
+                        status=ExecutionStatus.failed,
+                        error_message="服务重启，执行中断",
+                    )
+                await self.log_repo.append(
+                    latest_exec.id, LogLevel.warn, "服务重启，执行中断"
+                )
+            logger.info("Issue %s recovered to waiting_human", issue.id)
+
     async def start_task(self, issue_id: str) -> None:
         issue = await self.issue_repo.get(issue_id)
         if issue is None:
             raise ValueError(f"Issue {issue_id} not found")
-        if issue.status not in (IssueStatus.open, IssueStatus.waiting_human):
+        if issue.status not in (IssueStatus.open, IssueStatus.waiting_human, IssueStatus.cancelled):
             raise ValueError(f"Issue {issue_id} is in status {issue.status}, cannot run")
         cancel_event = asyncio.Event()
         self._cancel_tokens[issue_id] = cancel_event
@@ -105,8 +130,24 @@ class AgentRuntime:
             await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
             return
         if success:
-            await self._git_commit(branch_name, f"agent: resolve issue {issue.title}", cwd=workspace)
-            await self.issue_repo.update_status(issue_id, IssueStatus.done)
+            committed = await self._git_commit(
+                branch_name, f"agent: resolve issue {issue.title}", cwd=workspace,
+            )
+            if not committed:
+                logger.warning("Task %s: AI reported success but no file changes", issue_id)
+                await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+            else:
+                pushed = await self._git_push(branch_name, cwd=workspace)
+                if not pushed:
+                    logger.warning("Task %s: git push failed", issue_id)
+                    await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+                else:
+                    pr_url = await self._create_pr(branch_name, issue, cwd=workspace)
+                    if pr_url:
+                        await self.issue_repo.update_fields(issue_id, pr_url=pr_url)
+                    else:
+                        logger.warning("Task %s: PR creation failed (code is pushed)", issue_id)
+                    await self.issue_repo.update_status(issue_id, IssueStatus.done)
         else:
             await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
 
@@ -177,27 +218,118 @@ class AgentRuntime:
             await self.log_repo.append(execution_id, level, f"{prefix}: {cmd}")
 
     async def _git_create_branch(self, branch_name: str, *, cwd: str) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "checkout", "-b", branch_name, cwd=cwd,
+        # Check if branch already exists
+        check = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--verify", branch_name, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.warning("git checkout -b failed: %s", stderr.decode())
+        await check.communicate()
+        if check.returncode == 0:
+            # Branch exists — just checkout
+            proc = await asyncio.create_subprocess_exec(
+                "git", "checkout", branch_name, cwd=cwd,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning("git checkout failed: %s", stderr.decode())
+        else:
+            # Branch does not exist — create and checkout
+            proc = await asyncio.create_subprocess_exec(
+                "git", "checkout", "-b", branch_name, cwd=cwd,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning("git checkout -b failed: %s", stderr.decode())
 
-    async def _git_commit(self, branch_name: str, message: str, *, cwd: str) -> None:
+    async def _git_commit(self, branch_name: str, message: str, *, cwd: str) -> bool:
+        """Stage changed files and commit. Returns True if a commit was made."""
+        # 1. Get modified tracked files
         proc = await asyncio.create_subprocess_exec(
-            "git", "add", "-A", cwd=cwd,
+            "git", "diff", "--name-only", cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        modified = [f for f in stdout.decode().strip().splitlines() if f]
+
+        # 2. Get new untracked files (respecting .gitignore)
+        proc = await asyncio.create_subprocess_exec(
+            "git", "ls-files", "--others", "--exclude-standard", cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        untracked = [f for f in stdout.decode().strip().splitlines() if f]
+
+        files_to_add = modified + untracked
+        if not files_to_add:
+            logger.warning("No file changes to commit")
+            return False
+
+        # 3. Stage only the changed files
+        proc = await asyncio.create_subprocess_exec(
+            "git", "add", "--", *files_to_add, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
+
+        # 4. Verify something is staged
         proc = await asyncio.create_subprocess_exec(
-            "git", "commit", "-m", message, "--allow-empty", cwd=cwd,
+            "git", "diff", "--cached", "--quiet", cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode == 0:
+            # returncode 0 means no staged changes
+            logger.warning("Nothing staged after git add")
+            return False
+
+        # 5. Commit (no --allow-empty)
+        proc = await asyncio.create_subprocess_exec(
+            "git", "commit", "-m", message, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             logger.warning("git commit failed: %s", stderr.decode())
+            return False
+        return True
+
+    async def _git_push(self, branch_name: str, *, cwd: str) -> bool:
+        """Push branch to remote. Returns True on success."""
+        remote = self.settings.project.remote
+        proc = await asyncio.create_subprocess_exec(
+            "git", "push", "-u", remote, branch_name, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning("git push failed: %s", stderr.decode())
+            return False
+        return True
+
+    async def _create_pr(
+        self, branch_name: str, issue: Issue, *, cwd: str
+    ) -> str | None:
+        """Create a PR via gh CLI. Returns the PR URL on success, None on failure."""
+        pr_base = self.settings.project.pr_base
+        title = f"agent: {issue.title}"
+        body = issue.description or issue.title
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "pr", "create",
+            "--base", pr_base,
+            "--head", branch_name,
+            "--title", title,
+            "--body", body,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning("gh pr create failed: %s", stderr.decode())
+            return None
+        pr_url = stdout.decode().strip()
+        return pr_url or None
 
     async def _get_git_diff(self, *, cwd: str) -> str | None:
         default_branch = self.settings.project.default_branch

@@ -1,0 +1,160 @@
+# Mango ROADMAP 2 — 里程碑 2
+
+> Issue 进来，PR 出去。
+
+---
+
+## 里程碑 1 完成情况
+
+Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 三层循环 → OpenCode 执行 → git commit → 前端轮询展示。后端 ~600 行 Python，前端 ~800 行 TypeScript，11 个测试文件。
+
+---
+
+## 已知问题
+
+### P0 — 必须修
+
+| # | 问题 | 现状 | 影响 |
+|---|------|------|------|
+| 1 | **缺少 PR 环节** | Agent commit 到分支就结束，没有 push，没有 PR | "代码出去"没有出口，用户要手动建 PR，code review 和 CI 无法介入 |
+| 2 | **服务重启状态丢失** | cancel_tokens / running_tasks 存内存 | 重启后 Issue 卡在 `running`，永远无法再触发，只能手动改库 |
+| 3 | **成功判定粗糙** | OpenCode 返回非空即 `success=True` | 错误信息也被当作成功结果，空 commit 也算完成 |
+
+### P1 — 尽快修
+
+| # | 问题 | 现状 |
+|---|------|------|
+| 4 | **git 操作不健壮** | 分支已存在时 `checkout -b` 静默失败；`git add -A` 无过滤；`--allow-empty` 提交空 commit |
+| 5 | **状态机漏洞** | `cancelled` 无法重新 run；retry 的状态转换无事务保护 |
+| 6 | **DB 连接管理** | 每次操作新建连接，高频写入可能 `database is locked` |
+
+### P2 — 有空修
+
+| # | 问题 | 现状 |
+|---|------|------|
+| 7 | **安全约束是软防护** | prompt 注入规则 LLM 可以忽略，审计依赖 markdown 格式，事后补救 |
+| 8 | **workspace 无校验** | 用户可传任意路径（`/etc`），Agent 就在那执行 |
+| 9 | **update_fields 字段名拼接** | 字段名直接拼入 SQL，当前调用安全但接口有隐患 |
+| 10 | **前端无实时反馈** | 3 秒轮询，执行中无日志，API 失败无提示 |
+| 11 | **Issue 不可编辑删除** | 创建后无法修改标题/描述，无法删除 |
+
+### P3 — 记录备忘
+
+| # | 问题 |
+|---|------|
+| 12 | 测试覆盖不足（Runtime 完整路径、cancel、状态机边界、前端零测试） |
+| 13 | 无结构化日志（难以关联 Issue 完整执行链路） |
+
+---
+
+## 里程碑 2 规划
+
+### 第一步：PR 闭环 + 可靠性修复
+
+> 解决 P0 + P1，让核心链路从"能跑"变成"能用"。
+
+**PR 闭环（P0 #1 + #3）**
+
+- [ ] `_run_task` 成功后：`git push origin {branch}` → `gh pr create`
+- [ ] PR 标题基于 Issue title，PR 描述包含 Issue 描述 + 变更文件列表
+- [ ] Issue 新增 `pr_url` 字段，`done` = PR 已创建
+- [ ] commit 前检查 `git diff --cached --quiet`，无改动则标记 failed 而非空 commit
+- [ ] 配置项：`[project] remote = "origin"`、`[project] pr_base = "main"`
+
+涉及文件：`runtime.py`、`models.py`、`repos.py`、`001_init.sql`（加字段）、`overseer.toml`
+
+**状态恢复（P0 #2）**
+
+- [ ] 服务启动时扫描 `status = 'running'` 的 Issue，标记为 `waiting_human`
+- [ ] 附带 execution_log："服务重启，执行中断"
+
+涉及文件：`app.py`（startup event）、`runtime.py`
+
+**git 加固（P1 #4）**
+
+- [ ] 分支已存在时 `git checkout` 而非 `git checkout -b`
+- [ ] 去掉 `--allow-empty`
+- [ ] `git add` 改为只 add OpenCode 实际改动的文件（从 `git diff --name-only` 获取），或至少确认 `.gitignore` 生效
+
+涉及文件：`runtime.py`
+
+**状态机补全（P1 #5）**
+
+- [ ] `run_issue` 允许状态增加 `cancelled`
+- [ ] `update_fields` 增加字段名白名单：`ALLOWED_FIELDS = {"branch_name", "human_instruction", "pr_url", "spec"}`
+
+涉及文件：`routes.py`、`repos.py`
+
+**验收标准**：创建 Issue → AI 执行 → 代码 push 到远端 → PR 自动创建 → Issue 详情展示 PR 链接。服务重启后无卡死 Issue。
+
+### 第二步：执行过程可见
+
+> 解决 P2 #10，用户不再面对黑盒。
+
+**SSE 实时推送**
+
+- [ ] 新增 `GET /api/issues/{id}/stream` SSE 端点
+- [ ] Runtime 通过内存 EventBus 发事件：`turn_start` / `log` / `turn_end` / `task_end`
+- [ ] 前端 `EventSource` 替换 3 秒轮询（保留轮询作为 fallback）
+
+涉及文件：新增 `server/sse.py`、修改 `runtime.py`（发事件）、前端 `useIssueDetail.ts`
+
+**OpenCode 事件流透传**
+
+- [ ] `opencode_client.py` 从子进程 stdout 逐行读取 NDJSON（替换当前一次性 `communicate()`）
+- [ ] 解析 tool_use 事件（grep / read / edit / shell），通过 EventBus 实时转发
+- [ ] 前端展示为步骤列表
+
+涉及文件：`opencode_client.py`、`server/sse.py`、前端新增 `StepList.tsx`
+
+**验收标准**：AI 执行中，用户在浏览器实时看到"正在读取 xxx.py"、"正在修改 yyy.py"等步骤流。
+
+### 第三步：Spec 阶段（可选流程）
+
+> AI 先出方案，用户确认后再执行。
+
+```
+open → planning → planned → running → done (PR created)
+         ↑                     ↑
+     POST /plan           POST /run
+```
+
+- [ ] 新增状态 `planning` / `planned`
+- [ ] `POST /api/issues/{id}/plan`：调用 OpenCode 生成 Spec（PlanSkill）
+- [ ] Spec 结构：`{plan: string, acceptance_criteria: string[], files: string[]}`
+- [ ] `PUT /api/issues/{id}/spec`：用户编辑 Spec
+- [ ] `POST /api/issues/{id}/run`：执行时将 Spec 注入 TurnContext
+- [ ] 前端 Spec 卡片：展示计划 + 验收标准，"确认执行" / "重新生成" 按钮
+- [ ] Spec 是可选流程：用户可以从 `open` 直接 `run`，跳过 plan
+
+涉及文件：`models.py`、`routes.py`、`repos.py`、新增 `skills/plan.py`、前端新增 `SpecCard.tsx`、`001_init.sql`（加 spec 字段）
+
+**验收标准**：用户点"生成计划"→ 看到 AI 的执行方案 → 确认或修改 → 点"执行"→ Agent 按计划工作 → PR 创建。
+
+### 第四步：基础体验打磨
+
+- [ ] Issue 编辑（`PUT /api/issues/{id}`，仅 `open` / `planned` 可编辑）
+- [ ] Issue 删除（`DELETE /api/issues/{id}`，仅 `open` / `done` / `failed` 可删除）
+- [ ] 前端 API 错误提示（Ant Design Message）
+- [ ] workspace 路径白名单（`[security] allowed_workspaces`）
+
+---
+
+## 推迟事项
+
+| 方向 | 前提条件 |
+|------|---------|
+| Docker 沙箱隔离 | 安全问题在分支隔离 + 审计下不够用时 |
+| opencode serve Session 复用 | OpenCode serve 模式稳定后 |
+| 任务拆分 + 并行执行 | Spec 阶段成熟后 |
+| Memory 系统（跨任务知识） | 核心链路完全可靠后 |
+| 多模型 / Provider 切换 | 执行层抽象完成后 |
+
+---
+
+## 设计参考
+
+本规划受 Routa 平台启发，核心借鉴：
+- **Spec 审阅**：Issue → Spec → 执行的分层（Mango 简化为可选的 plan 阶段）
+- **过程可见**：Thinking Chain 实时展示 AI 的 grep/read/edit 步骤
+- **结构化进度**：Task Snapshot 看板（Mango 简化为 Turn 卡片视图）

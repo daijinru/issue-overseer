@@ -44,6 +44,7 @@ class Issue(BaseModel):
     status: IssueStatus = IssueStatus.open
     branch_name: str | None = None
     human_instruction: str | None = None
+    pr_url: str | None = None
     workspace: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

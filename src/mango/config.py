@@ -30,6 +30,8 @@ class OpenCodeConfig(BaseModel):
 class ProjectConfig(BaseModel):
     workspace: str = "."
     default_branch: str = "main"
+    remote: str = "origin"
+    pr_base: str = "main"
 
 
 class DatabaseConfig(BaseModel):

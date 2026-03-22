@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
+# Shared connection — opened once by init_db(), reused by get_db_connection().
+_shared_connection: aiosqlite.Connection | None = None
+
+
+async def _open_shared_connection() -> None:
+    """Open the shared database connection and configure pragmas."""
+    global _shared_connection
+    settings = get_settings()
+    db_path = str(Path(settings.database.path))
+    _shared_connection = await aiosqlite.connect(db_path)
+    _shared_connection.row_factory = aiosqlite.Row
+    await _shared_connection.execute("PRAGMA foreign_keys=ON")
+    await _shared_connection.execute("PRAGMA busy_timeout=5000")
+
+
+async def close_shared_connection() -> None:
+    """Close the shared database connection. Call on shutdown."""
+    global _shared_connection
+    if _shared_connection is not None:
+        await _shared_connection.close()
+        _shared_connection = None
+
 
 async def init_db() -> None:
     """Initialize the database: create directories, run pending migrations.
@@ -62,10 +84,13 @@ async def init_db() -> None:
             await db.commit()
             logger.info("Migration applied: %s", migration_file.name)
 
+    # Open the shared connection after migrations are done
+    await _open_shared_connection()
+
 
 @asynccontextmanager
 async def get_db_connection() -> AsyncIterator[aiosqlite.Connection]:
-    """Yield an aiosqlite connection with row_factory set to Row.
+    """Yield the shared aiosqlite connection with row_factory set to Row.
 
     Usage::
 
@@ -73,10 +98,14 @@ async def get_db_connection() -> AsyncIterator[aiosqlite.Connection]:
             cursor = await db.execute("SELECT * FROM issues")
             rows = await cursor.fetchall()
     """
-    settings = get_settings()
-    db_path = str(Path(settings.database.path))
-
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA foreign_keys=ON")
-        yield db
+    if _shared_connection is None:
+        # Fallback: open a one-off connection (e.g. in tests)
+        settings = get_settings()
+        db_path = str(Path(settings.database.path))
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys=ON")
+            await db.execute("PRAGMA busy_timeout=5000")
+            yield db
+    else:
+        yield _shared_connection

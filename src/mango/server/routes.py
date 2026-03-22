@@ -58,8 +58,8 @@ async def run_issue(issue_id: str, request: Request):
     issue = await repo.get(issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="Issue not found")
-    if issue.status not in (IssueStatus.open, IssueStatus.waiting_human):
-        raise HTTPException(status_code=409, detail=f"Issue is {issue.status.value}, must be 'open' or 'waiting_human' to run")
+    if issue.status not in (IssueStatus.open, IssueStatus.waiting_human, IssueStatus.cancelled):
+        raise HTTPException(status_code=409, detail=f"Issue is {issue.status.value}, must be 'open', 'waiting_human' or 'cancelled' to run")
     if runtime.is_running(issue_id):
         raise HTTPException(status_code=409, detail="Issue is already running")
     await runtime.start_task(issue_id)

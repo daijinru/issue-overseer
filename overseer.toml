@@ -12,6 +12,8 @@ timeout = 300
 [project]
 workspace = "."
 default_branch = "main"
+remote = "origin"
+pr_base = "main"
 
 [database]
 path = "./data/mango.db"
