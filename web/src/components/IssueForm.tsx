@@ -19,6 +19,7 @@ export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
       await createIssue({
         title: values.title,
         description: values.description || '',
+        workspace: values.workspace || undefined,
       });
       message.success('Issue 创建成功');
       form.resetFields();
@@ -57,6 +58,13 @@ export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
             rows={4}
             placeholder="详细描述任务内容（可选）"
           />
+        </Form.Item>
+        <Form.Item
+          name="workspace"
+          label="工作目录"
+          tooltip="Agent 执行任务的代码仓库路径。留空则使用全局默认配置。"
+        >
+          <Input placeholder="/path/to/your/repo（可选，留空使用默认配置）" />
         </Form.Item>
       </Form>
     </Modal>

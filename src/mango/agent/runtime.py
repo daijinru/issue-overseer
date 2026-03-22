@@ -13,7 +13,7 @@ from mango.agent.opencode_client import OpenCodeClient
 from mango.agent.safety import extract_commands_from_result, validate_command
 from mango.config import get_settings
 from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
-from mango.models import ExecutionStatus, IssueStatus, LogLevel
+from mango.models import ExecutionStatus, Issue, IssueStatus, LogLevel
 from mango.skills.base import GenericSkill
 
 logger = logging.getLogger(__name__)
@@ -59,12 +59,17 @@ class AgentRuntime:
         self._cancel_tokens.pop(issue_id, None)
         self._running_tasks.pop(issue_id, None)
 
+    def _resolve_workspace(self, issue: Issue) -> str:
+        """Return the working directory for an issue, falling back to global config."""
+        return issue.workspace or self.settings.project.workspace
+
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
         issue = await self.issue_repo.get(issue_id)
         assert issue is not None
         await self.issue_repo.update_status(issue_id, IssueStatus.running)
         branch_name = f"agent/{issue_id[:8]}"
-        await self._git_create_branch(branch_name)
+        workspace = self._resolve_workspace(issue)
+        await self._git_create_branch(branch_name, cwd=workspace)
         await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
         max_turns = self.settings.agent.max_turns
         task_timeout = self.settings.agent.task_timeout
@@ -100,15 +105,16 @@ class AgentRuntime:
             await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
             return
         if success:
-            await self._git_commit(branch_name, f"agent: resolve issue {issue.title}")
+            await self._git_commit(branch_name, f"agent: resolve issue {issue.title}", cwd=workspace)
             await self.issue_repo.update_status(issue_id, IssueStatus.done)
         else:
             await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
 
     async def _run_turn(self, *, issue, turn_number, max_turns,
                         cancel_event, last_result, last_error, execution_history) -> dict:
-        git_diff = await self._get_git_diff()
         fresh_issue = await self.issue_repo.get(issue.id)
+        workspace = self._resolve_workspace(fresh_issue or issue)
+        git_diff = await self._get_git_diff(cwd=workspace)
         ctx = build_turn_context(
             issue=fresh_issue or issue, turn_number=turn_number, max_turns=max_turns,
             last_result=last_result, last_error=last_error, git_diff=git_diff,
@@ -124,13 +130,12 @@ class AgentRuntime:
         )
         return await self._run_attempt(
             execution_id=execution_id, ctx=ctx,
-            cancel_event=cancel_event,
+            cancel_event=cancel_event, cwd=workspace,
         )
 
-    async def _run_attempt(self, *, execution_id, ctx, cancel_event) -> dict:
+    async def _run_attempt(self, *, execution_id, ctx, cancel_event, cwd: str) -> dict:
         start = time.monotonic()
         attempt_timeout = self.settings.opencode.timeout
-        cwd = self.settings.project.repo_path
         try:
             async with asyncio.timeout(attempt_timeout):
                 result_text = await self.skill.execute(
@@ -171,8 +176,7 @@ class AgentRuntime:
             prefix = "CMD" if is_allowed else "⚠ BLOCKED CMD"
             await self.log_repo.append(execution_id, level, f"{prefix}: {cmd}")
 
-    async def _git_create_branch(self, branch_name: str) -> None:
-        cwd = self.settings.project.repo_path
+    async def _git_create_branch(self, branch_name: str, *, cwd: str) -> None:
         proc = await asyncio.create_subprocess_exec(
             "git", "checkout", "-b", branch_name, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -181,8 +185,7 @@ class AgentRuntime:
         if proc.returncode != 0:
             logger.warning("git checkout -b failed: %s", stderr.decode())
 
-    async def _git_commit(self, branch_name: str, message: str) -> None:
-        cwd = self.settings.project.repo_path
+    async def _git_commit(self, branch_name: str, message: str, *, cwd: str) -> None:
         proc = await asyncio.create_subprocess_exec(
             "git", "add", "-A", cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -196,8 +199,7 @@ class AgentRuntime:
         if proc.returncode != 0:
             logger.warning("git commit failed: %s", stderr.decode())
 
-    async def _get_git_diff(self) -> str | None:
-        cwd = self.settings.project.repo_path
+    async def _get_git_diff(self, *, cwd: str) -> str | None:
         default_branch = self.settings.project.default_branch
         proc = await asyncio.create_subprocess_exec(
             "git", "diff", default_branch, "--", cwd=cwd,

@@ -10,7 +10,7 @@ command = "opencode"
 timeout = 300
 
 [project]
-repo_path = "."
+workspace = "."
 default_branch = "main"
 
 [database]

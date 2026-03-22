@@ -90,7 +90,7 @@ async def e2e_runtime(initialized_db, e2e_git_repo, monkeypatch):
 
     settings = get_settings()
 
-    object.__setattr__(settings.project, "repo_path", str(e2e_git_repo))
+    object.__setattr__(settings.project, "workspace", str(e2e_git_repo))
     object.__setattr__(settings.project, "default_branch", "main")
     object.__setattr__(settings.agent, "max_turns", 3)
     object.__setattr__(settings.agent, "task_timeout", 300)

@@ -464,7 +464,7 @@ url = "http://localhost:4096"       # OpenCode serve 地址
 timeout = 300                       # 单次 Attempt 调用超时（秒）
 
 [project]
-repo_path = "."                     # 目标仓库本地路径
+repo_path = "."                     # 目标仓库本地路径（全局默认 workspace）
 default_branch = "main"
 
 [database]
@@ -513,13 +513,13 @@ max_result_chars = 5000            # last_result 截断字符数
 
 ### Phase 2 — Web UI (2-3 天)
 
-- [ ] Issue 列表页（状态筛选，含 waiting_human 状态）
-- [ ] Issue 详情页（执行日志 + TurnContext 快照查看）
-- [ ] 创建 Issue 表单
-- [ ] "AI 执行" 按钮 + 状态轮询
-- [ ] "取消" 按钮（调用 cancel API）
-- [ ] 失败后 "附加指令重试" 交互（文本框 + 重试按钮）
-- [ ] 验收：用户在浏览器上完成 创建 → AI 执行 → 失败 → 附加指令重试 → 查看结果 全流程
+- [x] Issue 列表页（状态筛选，含 waiting_human 状态）
+- [x] Issue 详情页（执行日志 + TurnContext 快照查看）
+- [x] 创建 Issue 表单
+- [x] "AI 执行" 按钮 + 状态轮询
+- [x] "取消" 按钮（调用 cancel API）
+- [x] 失败后 "附加指令重试" 交互（文本框 + 重试按钮）
+- [x] 验收：用户在浏览器上完成 创建 → AI 执行 → 失败 → 附加指令重试 → 查看结果 全流程
 
 ### Phase 3 — 安全加固 + 打磨 (后续)
 

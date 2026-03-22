@@ -28,7 +28,7 @@ class OpenCodeConfig(BaseModel):
 
 
 class ProjectConfig(BaseModel):
-    repo_path: str = "."
+    workspace: str = "."
     default_branch: str = "main"
 
 

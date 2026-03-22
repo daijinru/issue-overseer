@@ -24,8 +24,8 @@ class IssueRepo:
         issue_id = str(uuid.uuid4())
         async with get_db_connection() as db:
             await db.execute(
-                "INSERT INTO issues (id, title, description) VALUES (?, ?, ?)",
-                (issue_id, data.title, data.description),
+                "INSERT INTO issues (id, title, description, workspace) VALUES (?, ?, ?, ?)",
+                (issue_id, data.title, data.description, data.workspace),
             )
             await db.commit()
             cursor = await db.execute(

@@ -2,6 +2,7 @@ import { Descriptions, Tabs, Typography, Spin, Empty, Alert } from 'antd';
 import {
   BranchesOutlined,
   FileTextOutlined,
+  FolderOutlined,
   HistoryOutlined,
 } from '@ant-design/icons';
 import { IssueStatusTag } from './StatusTag';
@@ -87,6 +88,15 @@ export function IssueDetail({
             </Typography.Text>
           ) : (
             <Typography.Text type="secondary">-</Typography.Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="工作目录">
+          {issue.workspace ? (
+            <Typography.Text code>
+              <FolderOutlined /> {issue.workspace}
+            </Typography.Text>
+          ) : (
+            <Typography.Text type="secondary">默认</Typography.Text>
           )}
         </Descriptions.Item>
         <Descriptions.Item label="创建时间">

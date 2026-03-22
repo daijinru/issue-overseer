@@ -26,6 +26,7 @@ export interface Issue {
   status: IssueStatus;
   branch_name: string | null;
   human_instruction: string | null;
+  workspace: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +61,7 @@ export interface ExecutionLog {
 export interface IssueCreateRequest {
   title: string;
   description?: string;
+  workspace?: string;
 }
 
 export interface IssueRetryRequest {

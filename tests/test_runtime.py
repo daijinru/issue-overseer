@@ -58,7 +58,7 @@ async def mock_runtime(initialized_db, tmp_git_repo, monkeypatch):
     settings = get_settings()
 
     # Use object.__setattr__ since pydantic models are frozen
-    object.__setattr__(settings.project, "repo_path", str(tmp_git_repo))
+    object.__setattr__(settings.project, "workspace", str(tmp_git_repo))
     object.__setattr__(settings.project, "default_branch", "main")
     object.__setattr__(settings.agent, "max_turns", 3)
     object.__setattr__(settings.agent, "task_timeout", 30)
