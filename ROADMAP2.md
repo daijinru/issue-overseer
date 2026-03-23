@@ -92,23 +92,90 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 
 > 解决 P2 #10，用户不再面对黑盒。
 
-**SSE 实时推送**
+#### Phase A — SSE 基础（替换轮询）
+
+> Turn 级别实时推送，替换 3 秒轮询。独立可交付，风险极低。
+
+**EventBus 内存事件总线**
+
+- [ ] 新增 `server/event_bus.py`（或 `agent/event_bus.py`），基于 `asyncio.Queue` 的 per-issue pub/sub
+- [ ] 数据结构：`dict[str, list[asyncio.Queue]]`（issue_id → subscribers）
+- [ ] 接口：`subscribe(issue_id)` / `unsubscribe(issue_id, queue)` / `publish(issue_id, event)`
+- [ ] 订阅者断开时自动清理 Queue，防止内存泄漏
+
+涉及文件：新增 `server/event_bus.py`
+
+**Runtime 事件发射**
+
+- [ ] `_run_task` 开始/结束：发 `task_start` / `task_end`
+- [ ] `_run_turn` 开始/结束：发 `turn_start` / `turn_end`
+- [ ] `_run_attempt` 开始/结束：发 `attempt_start` / `attempt_end`
+- [ ] `_git_commit` / `_git_push` / `_create_pr`：发 `git_commit` / `git_push` / `pr_created`
+- [ ] EventBus 实例通过 `app.state` 挂载，Runtime 构造时注入
+
+涉及文件：修改 `runtime.py`（~8-10 个发射点）、修改 `app.py`（挂载 EventBus）
+
+**SSE 端点**
 
 - [ ] 新增 `GET /api/issues/{id}/stream` SSE 端点
-- [ ] Runtime 通过内存 EventBus 发事件：`turn_start` / `log` / `turn_end` / `task_end`
-- [ ] 前端 `EventSource` 替换 3 秒轮询（保留轮询作为 fallback）
+- [ ] 使用 FastAPI `StreamingResponse`（`media_type="text/event-stream"`），无需额外依赖
+- [ ] 连接生命周期管理：客户端断开清理、issue 执行完成关闭 stream、支持多客户端同时监听同一 issue
 
-涉及文件：新增 `server/sse.py`、修改 `runtime.py`（发事件）、前端 `useIssueDetail.ts`
+涉及文件：新增 `server/sse.py`、修改 `routes.py`（注册路由）
 
-**OpenCode 事件流透传**
+**前端 EventSource**
 
-- [ ] `opencode_client.py` 从子进程 stdout 逐行读取 NDJSON（替换当前一次性 `communicate()`）
-- [ ] 解析 tool_use 事件（grep / read / edit / shell），通过 EventBus 实时转发
-- [ ] 前端展示为步骤列表
+- [ ] `useIssueDetail.ts`：当 `issue.status === 'running'` 时创建 `EventSource` 连接 `/api/issues/{id}/stream`
+- [ ] 实时接收事件更新 `logs` / `executions` 状态
+- [ ] 保留 `usePolling` 作为 fallback（SSE 连接失败时回退到 3 秒轮询）
+- [ ] 新增 SSE 事件类型定义到 `types/index.ts`
 
-涉及文件：`opencode_client.py`、`server/sse.py`、前端新增 `StepList.tsx`
+涉及文件：修改 `useIssueDetail.ts`、修改 `types/index.ts`
 
-**验收标准**：AI 执行中，用户在浏览器实时看到"正在读取 xxx.py"、"正在修改 yyy.py"等步骤流。
+**Phase A 验收标准**：AI 执行中，前端通过 SSE 实时收到 turn 级别事件（"第 1 轮开始"、"第 1 轮结束"、"代码已提交"、"PR 已创建"），不再依赖轮询。SSE 断开后自动回退到轮询。
+
+---
+
+#### Phase B — OpenCode 流式透传（细粒度步骤）
+
+> 依赖 Phase A 的 EventBus。实现"正在读取 xxx.py"的实时步骤展示。
+
+**opencode_client 流式改造**
+
+- [ ] `proc.communicate()` 替换为 `async for line in proc.stdout` 逐行读取 NDJSON
+- [ ] 每行解析后通过 EventBus 实时转发（事件类型 `log` / `step`）
+- [ ] 保留 "last wins" 语义用于最终结果提取（`_parse_output` 的最终聚合逻辑不变）
+- [ ] cancel 机制适配：从 `asyncio.wait({comm_task, cancel_wait})` 改为流式循环中检查 cancel flag + `proc.kill()`
+
+涉及文件：修改 `opencode_client.py`
+
+**tool_use 事件解析**
+
+- [ ] 运行 OpenCode `--format json` 确认 stdout 中 `tool_use` 事件的实际 JSON 结构
+- [ ] 解析 tool_use 事件（grep / read / edit / shell），提取操作类型 + 目标文件路径
+- [ ] 如果 OpenCode 不输出 tool_use 事件 → 降级为只推送 `parts` 级别事件（仍优于 Phase A）
+
+涉及文件：修改 `opencode_client.py`
+
+**前端步骤列表**
+
+- [ ] 新增 `StepList.tsx`：展示 OpenCode 实时步骤流（"正在读取 xxx.py"、"正在修改 yyy.py"、"正在执行 pytest"）
+- [ ] `IssueDetail.tsx` 的 Tabs 中新增"实时步骤"tab 挂载 `StepList`
+
+涉及文件：新增前端 `StepList.tsx`、修改 `IssueDetail.tsx`
+
+**Phase B 验收标准**：AI 执行中，用户在浏览器实时看到"正在读取 xxx.py"、"正在修改 yyy.py"等步骤流。
+
+---
+
+#### 技术风险与应对
+
+| 风险 | 等级 | 应对策略 |
+|------|------|---------|
+| OpenCode `tool_use` 事件格式未明确 | 🟡 中 | Phase B 开始前先运行 `opencode run --format json` 抓取实际输出，确认事件结构。若无 tool_use → 降级为 `parts` 级别推送，Phase B 的前端仅展示文本摘要而非文件级步骤 |
+| `communicate()` → `readline()` 后 cancel 机制变化 | 🟢 低 | 流式循环中每次 readline 前检查 `cancel_event.is_set()`，为 True 时 `proc.kill()` + break。比原来的 `asyncio.wait` 模式更简单 |
+| SSE 连接生命周期（客户端断开、多客户端、执行完成） | 🟢 低 | EventBus unsubscribe 在 `finally` 块中执行；`task_end` 事件触发 stream 关闭；Queue 有 maxsize 防内存膨胀 |
+| 背压 / 内存 | 🟢 低 | 单 issue 串行执行，事件量有限（几十到几百条）。Queue 设 `maxsize=1000`，溢出时丢弃旧事件并记日志 |
 
 ### 第三步：Spec 阶段（可选流程）
 
