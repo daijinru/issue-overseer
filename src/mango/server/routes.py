@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mango.db.connection import get_db_connection
@@ -10,6 +11,7 @@ from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
 from mango.models import (
     Execution, ExecutionLog, Issue, IssueCreate, IssueRetry, IssueStatus,
 )
+from mango.server.sse import sse_stream
 
 router = APIRouter(prefix="/api")
 
@@ -107,3 +109,22 @@ async def get_issue_executions(issue_id: str):
         raise HTTPException(status_code=404, detail="Issue not found")
     exec_repo = ExecutionRepo()
     return await exec_repo.list_by_issue(issue_id)
+
+
+@router.get("/issues/{issue_id}/stream")
+async def stream_issue_events(issue_id: str, request: Request):
+    """SSE endpoint — real-time event stream for an issue's execution."""
+    repo = IssueRepo()
+    issue = await repo.get(issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    event_bus = request.app.state.event_bus
+    return StreamingResponse(
+        sse_stream(event_bus, issue_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -67,3 +67,21 @@ export interface IssueCreateRequest {
 export interface IssueRetryRequest {
   human_instruction?: string;
 }
+
+// SSE event types — mirrors backend EventBus event_type values
+export type SSEEventType =
+  | 'task_start'
+  | 'task_end'
+  | 'turn_start'
+  | 'turn_end'
+  | 'attempt_start'
+  | 'attempt_end'
+  | 'git_commit'
+  | 'git_push'
+  | 'pr_created'
+  | 'task_cancelled';
+
+export interface SSEEvent {
+  type: SSEEventType;
+  data: Record<string, unknown>;
+}

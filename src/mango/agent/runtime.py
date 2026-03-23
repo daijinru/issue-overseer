@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from dataclasses import asdict
+from typing import TYPE_CHECKING
 
 from mango.agent.context import build_turn_context
 from mango.agent.opencode_client import OpenCodeClient
@@ -16,11 +17,14 @@ from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
 from mango.models import ExecutionStatus, Issue, IssueStatus, LogLevel
 from mango.skills.base import GenericSkill
 
+if TYPE_CHECKING:
+    from mango.server.event_bus import EventBus
+
 logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
-    def __init__(self) -> None:
+    def __init__(self, event_bus: EventBus | None = None) -> None:
         self.settings = get_settings()
         self.issue_repo = IssueRepo()
         self.exec_repo = ExecutionRepo()
@@ -32,6 +36,14 @@ class AgentRuntime:
         self.skill = GenericSkill(self.client)
         self._cancel_tokens: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._event_bus = event_bus
+
+    # ── Event helpers ───────────────────────────────────────────────
+
+    def _emit(self, issue_id: str, event_type: str, data: dict | None = None) -> None:
+        """Publish an event via the EventBus (no-op when bus is absent)."""
+        if self._event_bus is not None:
+            self._event_bus.publish(issue_id, event_type, data)
 
     async def recover_from_restart(self) -> None:
         """Recover issues stuck in 'running' after a service restart.
@@ -96,6 +108,7 @@ class AgentRuntime:
         workspace = self._resolve_workspace(issue)
         await self._git_create_branch(branch_name, cwd=workspace)
         await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
+        self._emit(issue_id, "task_start", {"issue_id": issue_id, "branch_name": branch_name})
         max_turns = self.settings.agent.max_turns
         task_timeout = self.settings.agent.task_timeout
         last_result: str | None = None
@@ -107,6 +120,7 @@ class AgentRuntime:
                 for turn in range(1, max_turns + 1):
                     if cancel_event.is_set():
                         await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
+                        self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
                         return
                     turn_result = await self._run_turn(
                         issue=issue, turn_number=turn, max_turns=max_turns,
@@ -128,6 +142,7 @@ class AgentRuntime:
             logger.warning("Task %s timed out after %ds", issue_id, task_timeout)
         except asyncio.CancelledError:
             await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
+            self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
             return
         if success:
             committed = await self._git_commit(
@@ -136,23 +151,31 @@ class AgentRuntime:
             if not committed:
                 logger.warning("Task %s: AI reported success but no file changes", issue_id)
                 await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+                self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
             else:
+                self._emit(issue_id, "git_commit", {"branch_name": branch_name})
                 pushed = await self._git_push(branch_name, cwd=workspace)
                 if not pushed:
                     logger.warning("Task %s: git push failed", issue_id)
                     await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+                    self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
                 else:
+                    self._emit(issue_id, "git_push", {"branch_name": branch_name})
                     pr_url = await self._create_pr(branch_name, issue, cwd=workspace)
                     if pr_url:
                         await self.issue_repo.update_fields(issue_id, pr_url=pr_url)
+                        self._emit(issue_id, "pr_created", {"pr_url": pr_url})
                     else:
                         logger.warning("Task %s: PR creation failed (code is pushed)", issue_id)
                     await self.issue_repo.update_status(issue_id, IssueStatus.done)
+                    self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
         else:
             await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+            self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
 
     async def _run_turn(self, *, issue, turn_number, max_turns,
                         cancel_event, last_result, last_error, execution_history) -> dict:
+        self._emit(issue.id, "turn_start", {"turn_number": turn_number, "max_turns": max_turns})
         fresh_issue = await self.issue_repo.get(issue.id)
         workspace = self._resolve_workspace(fresh_issue or issue)
         git_diff = await self._get_git_diff(cwd=workspace)
@@ -169,12 +192,16 @@ class AgentRuntime:
             prompt=self.skill._build_prompt(ctx),
             context_snapshot=_context_to_dict(ctx), git_diff_snapshot=git_diff,
         )
-        return await self._run_attempt(
+        result = await self._run_attempt(
             execution_id=execution_id, ctx=ctx,
             cancel_event=cancel_event, cwd=workspace,
         )
+        self._emit(issue.id, "turn_end", {"turn_number": turn_number, "success": result.get("success", False)})
+        return result
 
     async def _run_attempt(self, *, execution_id, ctx, cancel_event, cwd: str) -> dict:
+        issue_id = ctx.issue.id
+        self._emit(issue_id, "attempt_start", {"execution_id": execution_id})
         start = time.monotonic()
         attempt_timeout = self.settings.opencode.timeout
         try:
@@ -187,6 +214,7 @@ class AgentRuntime:
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.completed,
                                         result=result_text, duration_ms=duration_ms)
             await self.log_repo.append(execution_id, LogLevel.info, f"Turn completed in {duration_ms}ms")
+            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "completed", "duration_ms": duration_ms})
             return {"success": True, "result": result_text, "error": None}
         except TimeoutError:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -194,11 +222,13 @@ class AgentRuntime:
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.timeout,
                                         error_message=error_msg, duration_ms=duration_ms)
             await self.log_repo.append(execution_id, LogLevel.error, error_msg)
+            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "timeout", "duration_ms": duration_ms})
             return {"success": False, "result": None, "error": error_msg}
         except asyncio.CancelledError:
             duration_ms = int((time.monotonic() - start) * 1000)
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.cancelled,
                                         error_message="Cancelled by user", duration_ms=duration_ms)
+            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "cancelled", "duration_ms": duration_ms})
             raise
         except Exception as e:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -206,6 +236,7 @@ class AgentRuntime:
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.failed,
                                         error_message=error_msg, duration_ms=duration_ms)
             await self.log_repo.append(execution_id, LogLevel.error, error_msg)
+            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "failed", "duration_ms": duration_ms})
             return {"success": False, "result": None, "error": error_msg}
 
     async def _audit_commands(self, execution_id: str, result_text: str) -> None:
