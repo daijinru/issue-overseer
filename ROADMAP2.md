@@ -25,7 +25,7 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 | # | 问题 | 现状 | 状态 |
 |---|------|------|------|
 | 4 | **git 操作不健壮** | 分支已存在时 `checkout -b` 静默失败；`git add -A` 无过滤；`--allow-empty` 提交空 commit | ✅ 已修：`_git_create_branch()` 先 `rev-parse --verify` 判断分支存在；`git add` 改为只 add `diff --name-only` + `ls-files --others --exclude-standard` 的文件；去掉 `--allow-empty` |
-| 5 | **状态机漏洞** | `cancelled` 无法重新 run；retry 的状态转换无事务保护 | ✅ 部分修：`cancelled` 可重新 run（`routes.py` + `runtime.py`）；`update_fields` 加字段白名单。retry 事务保护尚未实现 |
+| 5 | **状态机漏洞** | `cancelled` 无法重新 run；retry 的状态转换无事务保护 | ✅ 已修：`cancelled` 可重新 run（`routes.py` + `runtime.py`）；`update_fields` 加字段白名单；`retry_reset()` 原子事务保护 |
 | 6 | **DB 连接管理** | 每次操作新建连接，高频写入可能 `database is locked` | ✅ 已修：`connection.py` 改为共享连接模式，`init_db()` 后复用单连接，加 `PRAGMA busy_timeout=5000`，shutdown 时关闭 |
 
 ### P2 — 有空修
@@ -49,39 +49,40 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 
 ## 里程碑 2 规划
 
-### 第一步：PR 闭环 + 可靠性修复
+### 第一步：PR 闭环 + 可靠性修复 ✅
 
 > 解决 P0 + P1，让核心链路从"能跑"变成"能用"。
 
 **PR 闭环（P0 #1 + #3）**
 
-- [ ] `_run_task` 成功后：`git push origin {branch}` → `gh pr create`
-- [ ] PR 标题基于 Issue title，PR 描述包含 Issue 描述 + 变更文件列表
-- [ ] Issue 新增 `pr_url` 字段，`done` = PR 已创建
-- [ ] commit 前检查 `git diff --cached --quiet`，无改动则标记 failed 而非空 commit
-- [ ] 配置项：`[project] remote = "origin"`、`[project] pr_base = "main"`
+- [x] `_run_task` 成功后：`git push origin {branch}` → `gh pr create`
+- [x] PR 标题基于 Issue title，PR 描述包含 Issue 描述 + 变更文件列表
+- [x] Issue 新增 `pr_url` 字段，`done` = PR 已创建
+- [x] commit 前检查 `git diff --cached --quiet`，无改动则标记 failed 而非空 commit
+- [x] 配置项：`[project] remote = "origin"`、`[project] pr_base = "main"`
 
 涉及文件：`runtime.py`、`models.py`、`repos.py`、`001_init.sql`（加字段）、`overseer.toml`
 
 **状态恢复（P0 #2）**
 
-- [ ] 服务启动时扫描 `status = 'running'` 的 Issue，标记为 `waiting_human`
-- [ ] 附带 execution_log："服务重启，执行中断"
+- [x] 服务启动时扫描 `status = 'running'` 的 Issue，标记为 `waiting_human`
+- [x] 附带 execution_log："服务重启，执行中断"
 
 涉及文件：`app.py`（startup event）、`runtime.py`
 
 **git 加固（P1 #4）**
 
-- [ ] 分支已存在时 `git checkout` 而非 `git checkout -b`
-- [ ] 去掉 `--allow-empty`
-- [ ] `git add` 改为只 add OpenCode 实际改动的文件（从 `git diff --name-only` 获取），或至少确认 `.gitignore` 生效
+- [x] 分支已存在时 `git checkout` 而非 `git checkout -b`
+- [x] 去掉 `--allow-empty`
+- [x] `git add` 改为只 add OpenCode 实际改动的文件（从 `git diff --name-only` 获取），或至少确认 `.gitignore` 生效
 
 涉及文件：`runtime.py`
 
 **状态机补全（P1 #5）**
 
-- [ ] `run_issue` 允许状态增加 `cancelled`
-- [ ] `update_fields` 增加字段名白名单：`ALLOWED_FIELDS = {"branch_name", "human_instruction", "pr_url", "spec"}`
+- [x] `run_issue` 允许状态增加 `cancelled`
+- [x] `update_fields` 增加字段名白名单：`ALLOWED_FIELDS = {"branch_name", "human_instruction", "pr_url", "workspace"}`
+- [x] `retry_reset()` 原子事务保护
 
 涉及文件：`routes.py`、`repos.py`
 

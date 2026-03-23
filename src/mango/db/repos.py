@@ -18,7 +18,7 @@ from mango.models import (
 
 
 _ALLOWED_ISSUE_FIELDS = frozenset({
-    "branch_name", "human_instruction", "pr_url", "workspace", "spec",
+    "branch_name", "human_instruction", "pr_url", "workspace",
 })
 
 
@@ -72,6 +72,26 @@ class IssueRepo:
             await db.execute(
                 "UPDATE issues SET status = ?, updated_at = datetime('now') WHERE id = ?",
                 (status.value, issue_id),
+            )
+            await db.commit()
+
+    async def retry_reset(
+        self, issue_id: str, human_instruction: str | None = None
+    ) -> None:
+        """Atomically update human_instruction (if given) and reset status to 'open'.
+
+        Both writes happen in a single transaction so a crash in between
+        cannot leave the issue in an inconsistent state.
+        """
+        async with get_db_connection() as db:
+            if human_instruction is not None:
+                await db.execute(
+                    "UPDATE issues SET human_instruction = ?, updated_at = datetime('now') WHERE id = ?",
+                    (human_instruction, issue_id),
+                )
+            await db.execute(
+                "UPDATE issues SET status = ?, updated_at = datetime('now') WHERE id = ?",
+                (IssueStatus.open.value, issue_id),
             )
             await db.commit()
 

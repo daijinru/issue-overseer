@@ -308,13 +308,30 @@ class AgentRuntime:
             return False
         return True
 
+    async def _get_changed_files(self, branch_name: str, *, cwd: str) -> list[str]:
+        """Return list of changed file paths between pr_base and branch."""
+        pr_base = self.settings.project.pr_base
+        proc = await asyncio.create_subprocess_exec(
+            "git", "diff", "--name-only", f"{pr_base}...{branch_name}", cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        return [f for f in stdout.decode().strip().splitlines() if f]
+
     async def _create_pr(
         self, branch_name: str, issue: Issue, *, cwd: str
     ) -> str | None:
         """Create a PR via gh CLI. Returns the PR URL on success, None on failure."""
         pr_base = self.settings.project.pr_base
         title = f"agent: {issue.title}"
+        # Build body: issue description + changed files list
         body = issue.description or issue.title
+        changed_files = await self._get_changed_files(branch_name, cwd=cwd)
+        if changed_files:
+            file_list = "\n".join(f"- {f}" for f in changed_files)
+            body = f"{body}\n\n---\nChanged files:\n{file_list}"
         proc = await asyncio.create_subprocess_exec(
             "gh", "pr", "create",
             "--base", pr_base,

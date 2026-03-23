@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mango.config import Settings, get_settings
 from mango.db.connection import init_db
 from mango.server.app import create_app
+
+# Exclude fixture data directories from pytest collection
+collect_ignore_glob = [str(Path(__file__).parent / "fixtures" / "**")]
 
 
 @pytest.fixture()
@@ -63,3 +69,72 @@ async def client(initialized_db):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture()
+async def mock_runtime(initialized_db, tmp_path, monkeypatch):
+    """AgentRuntime with local git repo + local bare remote, mock opencode.
+
+    Provides a real git repo with a bare remote so ``git push`` works locally
+    without network access.  The opencode client is NOT mocked here — tests
+    should attach their own mock to ``runtime.client.run_prompt``.
+
+    Yields ``(repo_dir, runtime)`` tuple.
+    """
+    from mango.agent.runtime import AgentRuntime
+    from mango.config import get_settings as _get_settings
+
+    settings = _get_settings()
+
+    # 1. Create local repo with initial commit
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo_dir, capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Mango Test"],
+        cwd=repo_dir, capture_output=True, check=True,
+    )
+    (repo_dir / "README.md").write_text("# Test repo")
+    subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=repo_dir, capture_output=True, check=True,
+    )
+
+    # 2. Create bare remote and push main
+    bare = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(bare)],
+        capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(bare)],
+        cwd=repo_dir, capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "push", "-u", "origin", "main"],
+        cwd=repo_dir, capture_output=True, check=True,
+    )
+
+    # 3. Configure settings
+    object.__setattr__(settings.project, "workspace", str(repo_dir))
+    object.__setattr__(settings.project, "default_branch", "main")
+    object.__setattr__(settings.project, "remote", "origin")
+    object.__setattr__(settings.project, "pr_base", "main")
+    object.__setattr__(settings.agent, "max_turns", 3)
+    object.__setattr__(settings.agent, "task_timeout", 60)
+    object.__setattr__(settings.opencode, "timeout", 30)
+
+    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+
+    runtime = AgentRuntime()
+
+    yield repo_dir, runtime
+
+    await runtime.client.close()
