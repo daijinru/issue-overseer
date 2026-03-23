@@ -89,9 +89,9 @@ export interface SSEEvent {
 
 // OpenCode streaming step — real-time AI operation visibility
 export interface OpenCodeStep {
-  step_type: 'tool_use' | 'text';
-  tool?: string;        // read, edit, shell, grep, ...
-  target?: string;      // file path or command
-  summary?: string;     // text summary (for step_type === 'text')
+  step_type: 'tool_use' | 'text' | 'step';
+  tool?: string;        // read, edit, bash, grep, glob, … (for step_type === 'tool_use')
+  target?: string;      // file path or command (for step_type === 'tool_use')
+  summary?: string;     // text summary (for step_type === 'text' or 'step')
   timestamp?: string;   // ISO 8601 from SSE event envelope
 }

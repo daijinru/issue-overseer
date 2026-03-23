@@ -1,4 +1,25 @@
-"""OpenCode client — runs ``opencode run`` as a subprocess."""
+"""OpenCode client — runs ``opencode run`` as a subprocess.
+
+OpenCode ``run --format json`` emits **newline-delimited JSON** (NDJSON).
+Every line shares the envelope::
+
+    {"type": "<event_type>", "timestamp": ..., "sessionID": "...", "part": {...}}
+
+Known event types:
+- ``step_start``  — a new LLM inference step begins
+- ``step_finish`` — step completes (with cost/token stats)
+- ``tool_use``    — a tool call completed or errored
+- ``text``        — a text part finished
+- ``error``       — session error
+
+For ``tool_use`` the tool details live under ``event["part"]``::
+
+    part.tool   — tool name (read, edit, bash, grep, glob, …)
+    part.input  — tool input dict (file_path, command, pattern, …)
+    part.state  — "completed" | "error"
+
+For ``text`` the content is at ``event["part"]["text"]``.
+"""
 
 from __future__ import annotations
 
@@ -50,7 +71,7 @@ class OpenCodeClient:
 
         try:
             raw_lines: list[str] = []
-            text_parts: list[str] = []
+            last_text: str = ""
 
             # ── Stream stdout line by line ──────────────────────────
             while True:
@@ -95,16 +116,10 @@ class OpenCodeClient:
                     if classified is not None:
                         on_event(classified)
 
-                # ── Accumulate text parts (last wins) ───────────────
-                parts = self._extract_parts(event)
-                if parts:
-                    extracted = [
-                        p.get("text", "")
-                        for p in parts
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    ]
-                    if extracted:
-                        text_parts = extracted  # keep overwriting — last wins
+                # ── Accumulate text (last wins) ─────────────────────
+                text = self._extract_text(event)
+                if text:
+                    last_text = text  # keep overwriting — last wins
 
             # ── Wait for process to finish ──────────────────────────
             await proc.wait()
@@ -125,8 +140,8 @@ class OpenCodeClient:
                 f"opencode exited with code {proc.returncode}: {err_msg}"
             )
 
-        # Build final result from accumulated text parts
-        result = "\n".join(text_parts).strip()
+        # Build final result from accumulated text
+        result = last_text.strip()
         if not result:
             # Fallback: return raw collected lines
             raw = "\n".join(raw_lines).strip()
@@ -134,15 +149,43 @@ class OpenCodeClient:
         return result
 
     @staticmethod
-    def _extract_parts(event: dict) -> list | None:
-        """Extract the ``parts`` list from various event shapes."""
+    def _extract_text(event: dict) -> str | None:
+        """Extract text content from an NDJSON event.
+
+        Supports both the real OpenCode format and legacy test format:
+
+        **Real OpenCode format** (``type: "text"``)::
+
+            {"type": "text", "part": {"type": "text", "text": "Hello!"}}
+
+        **Legacy test format** (``parts`` array)::
+
+            {"parts": [{"type": "text", "text": "Hello!"}]}
+        """
+        # ── Real OpenCode format: event.part.text ───────────────────
+        if event.get("type") == "text":
+            part = event.get("part")
+            if isinstance(part, dict):
+                text = part.get("text")
+                if text and isinstance(text, str):
+                    return text
+
+        # ── Legacy format: event.parts[] or event.data.parts[] ──────
         parts = event.get("parts")
         if parts is None and isinstance(event.get("data"), dict):
             parts = event["data"].get("parts")
         if parts is None and isinstance(event.get("message"), dict):
             parts = event["message"].get("parts")
+
         if parts and isinstance(parts, list):
-            return parts
+            texts = [
+                p.get("text", "")
+                for p in parts
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            if texts:
+                return "\n".join(texts)
+
         return None
 
     @staticmethod
@@ -152,27 +195,75 @@ class OpenCodeClient:
         Returns a dict with ``step_type`` and contextual fields, or ``None``
         if the event is not user-interesting.
 
-        Recognised patterns:
-        - ``tool_use`` events → ``{"step_type": "tool_use", "tool": ..., "target": ...}``
-        - Events with ``parts`` containing text → ``{"step_type": "text", "summary": ...}``
+        Supports both the real OpenCode format and legacy test format.
+
+        **Real OpenCode ``tool_use`` format**::
+
+            {"type": "tool_use", "part": {"tool": "read", "input": {"file_path": "..."},
+             "state": "completed"}}
+
+        **Real OpenCode ``text`` format**::
+
+            {"type": "text", "part": {"type": "text", "text": "..."}}
+
+        **Real OpenCode ``step_start`` / ``step_finish`` format**::
+
+            {"type": "step_start", "part": {"type": "step-start"}}
+            {"type": "step_finish", "part": {"type": "step-finish", "cost": ..., "tokens": ...}}
         """
+        event_type = event.get("type")
+
         # ── tool_use events ─────────────────────────────────────────
-        if event.get("type") == "tool_use":
-            tool_name = event.get("name", "unknown")
-            inp = event.get("input", {})
+        if event_type == "tool_use":
+            part = event.get("part", {})
+            if not isinstance(part, dict):
+                part = {}
+
+            # Real OpenCode: tool name is under part.tool
+            tool_name = part.get("tool") or event.get("name") or "unknown"
+
+            # Real OpenCode: input is under part.input
+            inp = part.get("input") or event.get("input") or {}
             if not isinstance(inp, dict):
                 inp = {}
+
             # Extract the most relevant target depending on tool
             target = (
-                inp.get("path")
-                or inp.get("file_path")
+                inp.get("file_path")
+                or inp.get("path")
                 or inp.get("command")
+                or inp.get("pattern")
                 or inp.get("query")
                 or ""
             )
             return {"step_type": "tool_use", "tool": tool_name, "target": target}
 
-        # ── text parts events ───────────────────────────────────────
+        # ── text events ─────────────────────────────────────────────
+        if event_type == "text":
+            part = event.get("part", {})
+            if isinstance(part, dict):
+                text = part.get("text", "")
+                if text and isinstance(text, str):
+                    summary = text.strip()
+                    if len(summary) > _MAX_SUMMARY_LEN:
+                        summary = summary[:_MAX_SUMMARY_LEN] + "..."
+                    if summary:
+                        return {"step_type": "text", "summary": summary}
+
+        # ── step_start / step_finish → structural events ────────────
+        if event_type == "step_start":
+            return {"step_type": "step", "summary": "AI 推理开始"}
+
+        if event_type == "step_finish":
+            part = event.get("part", {})
+            if isinstance(part, dict):
+                tokens = part.get("tokens", {})
+                if isinstance(tokens, dict):
+                    total = tokens.get("total", 0)
+                    return {"step_type": "step", "summary": f"AI 推理完成 (tokens: {total})"}
+            return {"step_type": "step", "summary": "AI 推理完成"}
+
+        # ── Legacy format: parts[] array ────────────────────────────
         parts = event.get("parts")
         if parts is None and isinstance(event.get("data"), dict):
             parts = event["data"].get("parts")
@@ -198,15 +289,17 @@ class OpenCodeClient:
         """Extract the final text result from ``--format json`` output.
 
         ``opencode run --format json`` outputs newline-delimited JSON events.
-        We scan for message events and extract ``type: "text"`` parts from the
-        last one.
+        We scan for text events and extract the text from the last one.
+
+        Supports both real OpenCode format (``type: "text"`` with
+        ``part.text``) and the legacy ``parts[]`` array format.
 
         .. note::
            This method is kept for backward compatibility with tests and any
            code that calls it directly.  The streaming ``run_prompt`` now does
            inline accumulation instead.
         """
-        text_parts: list[str] = []
+        last_text: str = ""
 
         for line in raw.splitlines():
             line = line.strip()
@@ -217,26 +310,14 @@ class OpenCodeClient:
             except json.JSONDecodeError:
                 continue
 
-            # Try to extract text parts from the event
-            parts = None
-            if isinstance(event, dict):
-                parts = event.get("parts")
-                # Nested under "data" or "message" in some event shapes
-                if parts is None and isinstance(event.get("data"), dict):
-                    parts = event["data"].get("parts")
-                if parts is None and isinstance(event.get("message"), dict):
-                    parts = event["message"].get("parts")
+            if not isinstance(event, dict):
+                continue
 
-            if parts and isinstance(parts, list):
-                extracted = [
-                    p.get("text", "")
-                    for p in parts
-                    if isinstance(p, dict) and p.get("type") == "text"
-                ]
-                if extracted:
-                    text_parts = extracted  # keep overwriting — last wins
+            text = OpenCodeClient._extract_text(event)
+            if text:
+                last_text = text
 
-        result = "\n".join(text_parts).strip()
+        result = last_text.strip()
         if not result:
             # Fallback: return raw stdout if we couldn't parse events
             return raw.strip()

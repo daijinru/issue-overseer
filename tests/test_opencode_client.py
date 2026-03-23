@@ -231,15 +231,22 @@ class SlowFakeStdout:
         return b""
 
 
-# ── _classify_event tests ─────────────────────────────────────────────
+# ── _classify_event tests (real OpenCode format) ──────────────────────
 
 
-def test_classify_event_tool_use():
-    """tool_use events should be classified with tool name and target."""
+def test_classify_event_tool_use_real_format():
+    """Real OpenCode tool_use: tool name and input under part."""
     event = {
         "type": "tool_use",
-        "name": "read",
-        "input": {"path": "src/main.py"},
+        "timestamp": 1718000000100,
+        "sessionID": "ses_abc123",
+        "part": {
+            "type": "tool",
+            "tool": "read",
+            "state": "completed",
+            "input": {"file_path": "src/main.py"},
+            "output": "file contents...",
+        },
     }
     result = OpenCodeClient._classify_event(event)
     assert result is not None
@@ -248,12 +255,15 @@ def test_classify_event_tool_use():
     assert result["target"] == "src/main.py"
 
 
-def test_classify_event_tool_use_edit():
-    """edit tool_use should extract file_path from input."""
+def test_classify_event_tool_use_edit_real_format():
+    """Real OpenCode edit tool_use extracts file_path."""
     event = {
         "type": "tool_use",
-        "name": "edit",
-        "input": {"file_path": "src/utils.py", "content": "..."},
+        "part": {
+            "tool": "edit",
+            "state": "completed",
+            "input": {"file_path": "src/utils.py", "content": "..."},
+        },
     }
     result = OpenCodeClient._classify_event(event)
     assert result is not None
@@ -262,24 +272,52 @@ def test_classify_event_tool_use_edit():
     assert result["target"] == "src/utils.py"
 
 
-def test_classify_event_tool_use_shell():
-    """shell tool_use should extract command from input."""
+def test_classify_event_tool_use_bash_real_format():
+    """Real OpenCode bash tool_use extracts command."""
     event = {
         "type": "tool_use",
-        "name": "shell",
-        "input": {"command": "pytest tests/"},
+        "part": {
+            "tool": "bash",
+            "state": "completed",
+            "input": {"command": "pytest tests/"},
+            "output": "all passed",
+        },
     }
     result = OpenCodeClient._classify_event(event)
     assert result is not None
     assert result["step_type"] == "tool_use"
-    assert result["tool"] == "shell"
+    assert result["tool"] == "bash"
     assert result["target"] == "pytest tests/"
 
 
-def test_classify_event_text_parts():
-    """Events with text parts should be classified as text with summary."""
+def test_classify_event_tool_use_grep_real_format():
+    """Real OpenCode grep tool_use extracts pattern."""
     event = {
-        "parts": [{"type": "text", "text": "I will now read the file and make changes."}],
+        "type": "tool_use",
+        "part": {
+            "tool": "grep",
+            "state": "completed",
+            "input": {"pattern": "def main", "path": "src/"},
+        },
+    }
+    result = OpenCodeClient._classify_event(event)
+    assert result is not None
+    assert result["step_type"] == "tool_use"
+    assert result["tool"] == "grep"
+    # pattern is extracted as target via inp.get("pattern")
+    assert "def main" in result["target"] or "src/" in result["target"]
+
+
+def test_classify_event_text_real_format():
+    """Real OpenCode text event: part.text."""
+    event = {
+        "type": "text",
+        "timestamp": 1718000000200,
+        "sessionID": "ses_abc123",
+        "part": {
+            "type": "text",
+            "text": "I will now read the file and make changes.",
+        },
     }
     result = OpenCodeClient._classify_event(event)
     assert result is not None
@@ -287,26 +325,66 @@ def test_classify_event_text_parts():
     assert "I will now read" in result["summary"]
 
 
-def test_classify_event_text_parts_truncated():
+def test_classify_event_text_truncated():
     """Long text summaries should be truncated to 200 chars."""
     long_text = "x" * 500
     event = {
-        "parts": [{"type": "text", "text": long_text}],
+        "type": "text",
+        "part": {"type": "text", "text": long_text},
     }
     result = OpenCodeClient._classify_event(event)
     assert result is not None
     assert len(result["summary"]) <= 203  # 200 + "..."
 
 
+def test_classify_event_step_start():
+    """step_start events should be classified."""
+    event = {
+        "type": "step_start",
+        "part": {"type": "step-start", "snapshot": "abc123"},
+    }
+    result = OpenCodeClient._classify_event(event)
+    assert result is not None
+    assert result["step_type"] == "step"
+    assert "开始" in result["summary"]
+
+
+def test_classify_event_step_finish():
+    """step_finish events should be classified with token info."""
+    event = {
+        "type": "step_finish",
+        "part": {
+            "type": "step-finish",
+            "cost": 0,
+            "tokens": {"total": 13808, "input": 10000, "output": 30},
+        },
+    }
+    result = OpenCodeClient._classify_event(event)
+    assert result is not None
+    assert result["step_type"] == "step"
+    assert "13808" in result["summary"]
+
+
 def test_classify_event_unknown():
     """Events without tool_use or text parts should return None."""
-    event = {"type": "start", "data": {}}
+    event = {"type": "unknown_event_type", "data": {}}
     result = OpenCodeClient._classify_event(event)
     assert result is None
 
 
-def test_classify_event_nested_data_parts():
-    """Parts nested under 'data' key should also be classified."""
+def test_classify_event_legacy_parts():
+    """Legacy parts[] format should still be classified (backward compat)."""
+    event = {
+        "parts": [{"type": "text", "text": "Analyzing code..."}],
+    }
+    result = OpenCodeClient._classify_event(event)
+    assert result is not None
+    assert result["step_type"] == "text"
+    assert "Analyzing code" in result["summary"]
+
+
+def test_classify_event_legacy_nested_data_parts():
+    """Legacy parts nested under 'data' key should also be classified."""
     event = {
         "data": {"parts": [{"type": "text", "text": "Analyzing code..."}]},
     }
@@ -323,8 +401,14 @@ def test_classify_event_nested_data_parts():
 async def test_run_prompt_streaming_calls_on_event(monkeypatch):
     """on_event callback should be called for each classified event during streaming."""
     lines = [
-        json.dumps({"type": "tool_use", "name": "read", "input": {"path": "foo.py"}}).encode() + b"\n",
-        json.dumps({"parts": [{"type": "text", "text": "final result"}]}).encode() + b"\n",
+        json.dumps({
+            "type": "tool_use",
+            "part": {"tool": "read", "state": "completed", "input": {"file_path": "foo.py"}},
+        }).encode() + b"\n",
+        json.dumps({
+            "type": "text",
+            "part": {"type": "text", "text": "final result"},
+        }).encode() + b"\n",
     ]
 
     async def fake_create_subprocess_exec(*args, **kwargs):
@@ -349,15 +433,16 @@ async def test_run_prompt_streaming_calls_on_event(monkeypatch):
     tool_events = [e for e in events_received if e.get("step_type") == "tool_use"]
     assert len(tool_events) >= 1
     assert tool_events[0]["tool"] == "read"
+    assert tool_events[0]["target"] == "foo.py"
 
 
 @pytest.mark.asyncio
 async def test_run_prompt_streaming_final_result_unchanged(monkeypatch):
     """Streaming mode should produce the same final result as batch mode."""
     lines = [
-        json.dumps({"type": "start"}).encode() + b"\n",
-        json.dumps({"parts": [{"type": "text", "text": "intermediate"}]}).encode() + b"\n",
-        json.dumps({"parts": [{"type": "text", "text": "final answer"}]}).encode() + b"\n",
+        json.dumps({"type": "step_start", "part": {"type": "step-start"}}).encode() + b"\n",
+        json.dumps({"type": "text", "part": {"type": "text", "text": "intermediate"}}).encode() + b"\n",
+        json.dumps({"type": "text", "part": {"type": "text", "text": "final answer"}}).encode() + b"\n",
     ]
 
     async def fake_create_subprocess_exec(*args, **kwargs):

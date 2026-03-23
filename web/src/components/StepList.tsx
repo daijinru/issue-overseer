@@ -7,6 +7,7 @@ import {
   CodeOutlined,
   ThunderboltOutlined,
   MessageOutlined,
+  RocketOutlined,
 } from '@ant-design/icons';
 import type { OpenCodeStep } from '../types';
 
@@ -25,12 +26,18 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string }> = {
   grep: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '搜索' },
   glob: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '查找' },
   search: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '搜索' },
+  codesearch: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '代码搜索' },
+  websearch: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '网页搜索' },
+  list: { icon: <SearchOutlined style={{ color: '#722ed1' }} />, label: '列目录' },
+  task: { icon: <RocketOutlined style={{ color: '#eb2f96' }} />, label: '子任务' },
 };
 
 function getToolDisplay(tool: string): { icon: React.ReactNode; label: string } {
   const lower = tool.toLowerCase();
   return TOOL_META[lower] ?? { icon: <CodeOutlined style={{ color: '#8c8c8c' }} />, label: tool };
 }
+
+const ROW_BG = (index: number) => index % 2 === 0 ? '#fafafa' : 'transparent';
 
 function StepItem({ step, index }: { step: OpenCodeStep; index: number }) {
   if (step.step_type === 'tool_use') {
@@ -40,7 +47,7 @@ function StepItem({ step, index }: { step: OpenCodeStep; index: number }) {
         style={{
           padding: '6px 12px',
           borderRadius: 4,
-          background: index % 2 === 0 ? '#fafafa' : 'transparent',
+          background: ROW_BG(index),
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -64,13 +71,35 @@ function StepItem({ step, index }: { step: OpenCodeStep; index: number }) {
     );
   }
 
+  if (step.step_type === 'step') {
+    // Structural step (step_start / step_finish)
+    return (
+      <div
+        style={{
+          padding: '4px 12px',
+          borderRadius: 4,
+          background: ROW_BG(index),
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 12,
+        }}
+      >
+        <RocketOutlined style={{ color: '#8c8c8c' }} />
+        <Typography.Text type="secondary" italic>
+          {step.summary || '-'}
+        </Typography.Text>
+      </div>
+    );
+  }
+
   // text step
   return (
     <div
       style={{
         padding: '6px 12px',
         borderRadius: 4,
-        background: index % 2 === 0 ? '#fafafa' : 'transparent',
+        background: ROW_BG(index),
         display: 'flex',
         alignItems: 'flex-start',
         gap: 8,
