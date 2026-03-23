@@ -10,6 +10,7 @@ from mango.models import (
     Execution,
     ExecutionLog,
     ExecutionStatus,
+    ExecutionStep,
     Issue,
     IssueCreate,
     IssueStatus,
@@ -183,3 +184,43 @@ class ExecutionLogRepo:
             )
             rows = await cursor.fetchall()
             return [ExecutionLog(**dict(r)) for r in rows]
+
+
+class ExecutionStepRepo:
+    """Repository for the ``execution_steps`` table."""
+
+    async def create(
+        self,
+        execution_id: str,
+        step_type: str,
+        tool: str | None = None,
+        target: str | None = None,
+        summary: str | None = None,
+    ) -> None:
+        async with get_db_connection() as db:
+            await db.execute(
+                "INSERT INTO execution_steps (execution_id, step_type, tool, target, summary) VALUES (?, ?, ?, ?, ?)",
+                (execution_id, step_type, tool, target, summary),
+            )
+            await db.commit()
+
+    async def list_by_execution(self, execution_id: str) -> list[ExecutionStep]:
+        async with get_db_connection() as db:
+            cursor = await db.execute(
+                "SELECT * FROM execution_steps WHERE execution_id = ? ORDER BY id",
+                (execution_id,),
+            )
+            rows = await cursor.fetchall()
+            return [ExecutionStep(**dict(r)) for r in rows]
+
+    async def list_by_issue(self, issue_id: str) -> list[ExecutionStep]:
+        async with get_db_connection() as db:
+            cursor = await db.execute(
+                """SELECT es.* FROM execution_steps es
+                   JOIN executions e ON es.execution_id = e.id
+                   WHERE e.issue_id = ?
+                   ORDER BY es.id""",
+                (issue_id,),
+            )
+            rows = await cursor.fetchall()
+            return [ExecutionStep(**dict(r)) for r in rows]

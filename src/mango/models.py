@@ -74,6 +74,22 @@ class ExecutionLog(BaseModel):
     created_at: str | None = None
 
 
+class StepType(str, Enum):
+    tool_use = "tool_use"
+    text = "text"
+    step = "step"
+
+
+class ExecutionStep(BaseModel):
+    id: int
+    execution_id: str
+    step_type: StepType
+    tool: str | None = None
+    target: str | None = None
+    summary: str | None = None
+    created_at: str | None = None
+
+
 # ── API request models ──────────────────────────────────────────────
 
 

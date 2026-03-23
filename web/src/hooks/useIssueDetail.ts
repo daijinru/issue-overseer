@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getIssue, getIssueExecutions, getIssueLogs } from '../api/client';
+import { getIssue, getIssueExecutions, getIssueLogs, getIssueSteps } from '../api/client';
 import { usePolling } from './usePolling';
-import type { Issue, Execution, ExecutionLog, SSEEventType, OpenCodeStep } from '../types';
+import type { Issue, Execution, ExecutionLog, ExecutionStep, SSEEventType, OpenCodeStep } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -20,6 +20,19 @@ const REFRESH_EVENTS: SSEEventType[] = [
 /** All SSE event types we listen to — refresh events + streaming events. */
 const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'opencode_step'];
 
+/**
+ * Convert persisted ExecutionStep[] to the OpenCodeStep[] format used by the UI.
+ */
+function toOpenCodeSteps(persisted: ExecutionStep[]): OpenCodeStep[] {
+  return persisted.map((s) => ({
+    step_type: s.step_type,
+    tool: s.tool ?? undefined,
+    target: s.target ?? undefined,
+    summary: s.summary ?? undefined,
+    timestamp: s.created_at,
+  }));
+}
+
 export function useIssueDetail(issueId: string | null) {
   const [issue, setIssue] = useState<Issue | null>(null);
   const [executions, setExecutions] = useState<Execution[]>([]);
@@ -31,17 +44,45 @@ export function useIssueDetail(issueId: string | null) {
   // Keep a ref to the EventSource so we can close it from anywhere.
   const esRef = useRef<EventSource | null>(null);
 
+  // Track the count of persisted steps so SSE can append without duplicates.
+  // When REST returns N persisted steps, SSE events only append on top of that baseline.
+  const persistedStepCountRef = useRef<number>(0);
+
   const fetchDetail = useCallback(async () => {
     if (!issueId) return;
     try {
-      const [issueData, execData, logData] = await Promise.all([
+      const [issueData, execData, logData, stepData] = await Promise.all([
         getIssue(issueId),
         getIssueExecutions(issueId),
         getIssueLogs(issueId),
+        getIssueSteps(issueId),
       ]);
       setIssue(issueData);
       setExecutions(execData);
       setLogs(logData);
+
+      // Always load persisted steps as a baseline — regardless of status.
+      //
+      // For running issues: REST provides the backfill (steps before page load
+      // or SSE reconnect), SSE appends new steps on top. The persistedStepCountRef
+      // prevents duplicates when both REST and SSE deliver the same step.
+      //
+      // For completed issues: REST is the only source (SSE is closed).
+      const historicalSteps = toOpenCodeSteps(stepData);
+      persistedStepCountRef.current = historicalSteps.length;
+
+      setSteps((prev) => {
+        if (issueData.status !== 'running') {
+          // Not running — REST is the single source of truth.
+          return historicalSteps;
+        }
+        // Running — merge: REST backfill + any SSE-only steps that arrived
+        // after the DB snapshot. SSE steps that were already persisted are
+        // covered by historicalSteps; only keep SSE-appended steps beyond
+        // the persisted count.
+        const sseOnlyTail = prev.slice(persistedStepCountRef.current);
+        return [...historicalSteps, ...sseOnlyTail];
+      });
     } catch (err) {
       console.error('Failed to fetch issue detail:', err);
     } finally {
@@ -53,12 +94,14 @@ export function useIssueDetail(issueId: string | null) {
   useEffect(() => {
     if (issueId) {
       setLoading(true);
+      persistedStepCountRef.current = 0;
       fetchDetail();
     } else {
       setIssue(null);
       setExecutions([]);
       setLogs([]);
       setSteps([]);
+      persistedStepCountRef.current = 0;
     }
   }, [issueId, fetchDetail]);
 
@@ -88,7 +131,9 @@ export function useIssueDetail(issueId: string | null) {
     for (const eventType of ALL_SSE_EVENTS) {
       es.addEventListener(eventType, (evt) => {
         if (eventType === 'opencode_step') {
-          // Accumulate step events directly from SSE data — no REST re-fetch.
+          // Append new step from SSE. Each step is also being persisted to DB
+          // by the backend, so the next fetchDetail() will include it in the
+          // REST baseline. We append here for immediate visibility.
           try {
             const stepData = JSON.parse((evt as MessageEvent).data) as OpenCodeStep;
             setSteps((prev) => [...prev, stepData]);
@@ -101,6 +146,7 @@ export function useIssueDetail(issueId: string | null) {
         // Clear steps on new task start
         if (eventType === 'task_start') {
           setSteps([]);
+          persistedStepCountRef.current = 0;
         }
 
         // All other events trigger a full data refresh.

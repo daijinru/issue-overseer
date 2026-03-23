@@ -57,6 +57,17 @@ export interface ExecutionLog {
   created_at: string;
 }
 
+// Persisted execution step — mirrors backend ExecutionStep model
+export interface ExecutionStep {
+  id: number;
+  execution_id: string;
+  step_type: 'tool_use' | 'text' | 'step';
+  tool: string | null;
+  target: string | null;
+  summary: string | null;
+  created_at: string;
+}
+
 // Request types
 export interface IssueCreateRequest {
   title: string;

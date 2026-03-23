@@ -7,9 +7,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mango.db.connection import get_db_connection
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
+from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
 from mango.models import (
-    Execution, ExecutionLog, Issue, IssueCreate, IssueRetry, IssueStatus,
+    Execution, ExecutionLog, ExecutionStep, Issue, IssueCreate, IssueRetry, IssueStatus,
 )
 from mango.server.sse import sse_stream
 
@@ -99,6 +99,16 @@ async def get_issue_logs(issue_id: str):
         raise HTTPException(status_code=404, detail="Issue not found")
     log_repo = ExecutionLogRepo()
     return await log_repo.list_by_issue(issue_id)
+
+
+@router.get("/issues/{issue_id}/steps", response_model=list[ExecutionStep])
+async def get_issue_steps(issue_id: str):
+    repo = IssueRepo()
+    issue = await repo.get(issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found")
+    step_repo = ExecutionStepRepo()
+    return await step_repo.list_by_issue(issue_id)
 
 
 @router.get("/issues/{issue_id}/executions", response_model=list[Execution])

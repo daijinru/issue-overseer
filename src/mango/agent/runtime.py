@@ -13,7 +13,7 @@ from mango.agent.context import build_turn_context
 from mango.agent.opencode_client import OpenCodeClient
 from mango.agent.safety import extract_commands_from_result, validate_command
 from mango.config import get_settings
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
+from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
 from mango.models import ExecutionStatus, Issue, IssueStatus, LogLevel
 from mango.skills.base import GenericSkill
 
@@ -29,6 +29,7 @@ class AgentRuntime:
         self.issue_repo = IssueRepo()
         self.exec_repo = ExecutionRepo()
         self.log_repo = ExecutionLogRepo()
+        self.step_repo = ExecutionStepRepo()
         self.client = OpenCodeClient(
             command=self.settings.opencode.command,
             timeout=self.settings.opencode.timeout,
@@ -208,6 +209,7 @@ class AgentRuntime:
         # Bridge OpenCode streaming events to the EventBus
         def on_opencode_event(event: dict) -> None:
             self._emit(issue_id, "opencode_step", event)
+            asyncio.create_task(self._persist_step(execution_id, event))
 
         try:
             async with asyncio.timeout(attempt_timeout):
@@ -253,6 +255,19 @@ class AgentRuntime:
             level = LogLevel.info if is_allowed else LogLevel.warn
             prefix = "CMD" if is_allowed else "⚠ BLOCKED CMD"
             await self.log_repo.append(execution_id, level, f"{prefix}: {cmd}")
+
+    async def _persist_step(self, execution_id: str, event: dict) -> None:
+        """Persist an OpenCode step event to the database (fire-and-forget)."""
+        try:
+            await self.step_repo.create(
+                execution_id=execution_id,
+                step_type=event.get("step_type", "step"),
+                tool=event.get("tool"),
+                target=event.get("target"),
+                summary=event.get("summary"),
+            )
+        except Exception:
+            logger.warning("Failed to persist execution step", exc_info=True)
 
     async def _git_create_branch(self, branch_name: str, *, cwd: str) -> None:
         # Check if branch already exists

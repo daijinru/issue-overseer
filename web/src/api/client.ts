@@ -2,6 +2,7 @@ import type {
   Issue,
   Execution,
   ExecutionLog,
+  ExecutionStep,
   IssueCreateRequest,
   IssueRetryRequest,
   IssueStatus,
@@ -75,4 +76,8 @@ export function getIssueLogs(id: string) {
 
 export function getIssueExecutions(id: string) {
   return request<Execution[]>(`/api/issues/${id}/executions`);
+}
+
+export function getIssueSteps(id: string) {
+  return request<ExecutionStep[]>(`/api/issues/${id}/steps`);
 }
