@@ -35,7 +35,7 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 | 7 | **安全约束是软防护** | prompt 注入规则 LLM 可以忽略，审计依赖 markdown 格式，事后补救 | 未修 |
 | 8 | **workspace 无校验** | 用户可传任意路径（`/etc`），Agent 就在那执行 | 未修 |
 | 9 | **update_fields 字段名拼接** | 字段名直接拼入 SQL，当前调用安全但接口有隐患 | ✅ 已修：`repos.py` 新增 `_ALLOWED_ISSUE_FIELDS` 白名单校验 |
-| 10 | **前端无实时反馈** | 3 秒轮询，执行中无日志，API 失败无提示 | 未修 |
+| 10 | **前端无实时反馈** | 3 秒轮询，执行中无日志，API 失败无提示 | ✅ 已修：Phase A（SSE 基础）+ Phase B（OpenCode 流式透传）完成。EventBus + SSE 端点 + 前端 EventSource + StepList 实时步骤组件 |
 | 11 | **Issue 不可编辑删除** | 创建后无法修改标题/描述，无法删除 | 未修 |
 
 ### P3 — 记录备忘
@@ -92,43 +92,43 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 
 > 解决 P2 #10，用户不再面对黑盒。
 
-#### Phase A — SSE 基础（替换轮询）
+#### Phase A — SSE 基础（替换轮询） ✅
 
 > Turn 级别实时推送，替换 3 秒轮询。独立可交付，风险极低。
 
 **EventBus 内存事件总线**
 
-- [ ] 新增 `server/event_bus.py`（或 `agent/event_bus.py`），基于 `asyncio.Queue` 的 per-issue pub/sub
-- [ ] 数据结构：`dict[str, list[asyncio.Queue]]`（issue_id → subscribers）
-- [ ] 接口：`subscribe(issue_id)` / `unsubscribe(issue_id, queue)` / `publish(issue_id, event)`
-- [ ] 订阅者断开时自动清理 Queue，防止内存泄漏
+- [x] 新增 `server/event_bus.py`（或 `agent/event_bus.py`），基于 `asyncio.Queue` 的 per-issue pub/sub
+- [x] 数据结构：`dict[str, list[asyncio.Queue]]`（issue_id → subscribers）
+- [x] 接口：`subscribe(issue_id)` / `unsubscribe(issue_id, queue)` / `publish(issue_id, event)`
+- [x] 订阅者断开时自动清理 Queue，防止内存泄漏
 
 涉及文件：新增 `server/event_bus.py`
 
 **Runtime 事件发射**
 
-- [ ] `_run_task` 开始/结束：发 `task_start` / `task_end`
-- [ ] `_run_turn` 开始/结束：发 `turn_start` / `turn_end`
-- [ ] `_run_attempt` 开始/结束：发 `attempt_start` / `attempt_end`
-- [ ] `_git_commit` / `_git_push` / `_create_pr`：发 `git_commit` / `git_push` / `pr_created`
-- [ ] EventBus 实例通过 `app.state` 挂载，Runtime 构造时注入
+- [x] `_run_task` 开始/结束：发 `task_start` / `task_end`
+- [x] `_run_turn` 开始/结束：发 `turn_start` / `turn_end`
+- [x] `_run_attempt` 开始/结束：发 `attempt_start` / `attempt_end`
+- [x] `_git_commit` / `_git_push` / `_create_pr`：发 `git_commit` / `git_push` / `pr_created`
+- [x] EventBus 实例通过 `app.state` 挂载，Runtime 构造时注入
 
 涉及文件：修改 `runtime.py`（~8-10 个发射点）、修改 `app.py`（挂载 EventBus）
 
 **SSE 端点**
 
-- [ ] 新增 `GET /api/issues/{id}/stream` SSE 端点
-- [ ] 使用 FastAPI `StreamingResponse`（`media_type="text/event-stream"`），无需额外依赖
-- [ ] 连接生命周期管理：客户端断开清理、issue 执行完成关闭 stream、支持多客户端同时监听同一 issue
+- [x] 新增 `GET /api/issues/{id}/stream` SSE 端点
+- [x] 使用 FastAPI `StreamingResponse`（`media_type="text/event-stream"`），无需额外依赖
+- [x] 连接生命周期管理：客户端断开清理、issue 执行完成关闭 stream、支持多客户端同时监听同一 issue
 
 涉及文件：新增 `server/sse.py`、修改 `routes.py`（注册路由）
 
 **前端 EventSource**
 
-- [ ] `useIssueDetail.ts`：当 `issue.status === 'running'` 时创建 `EventSource` 连接 `/api/issues/{id}/stream`
-- [ ] 实时接收事件更新 `logs` / `executions` 状态
-- [ ] 保留 `usePolling` 作为 fallback（SSE 连接失败时回退到 3 秒轮询）
-- [ ] 新增 SSE 事件类型定义到 `types/index.ts`
+- [x] `useIssueDetail.ts`：当 `issue.status === 'running'` 时创建 `EventSource` 连接 `/api/issues/{id}/stream`
+- [x] 实时接收事件更新 `logs` / `executions` 状态
+- [x] 保留 `usePolling` 作为 fallback（SSE 连接失败时回退到 3 秒轮询）
+- [x] 新增 SSE 事件类型定义到 `types/index.ts`
 
 涉及文件：修改 `useIssueDetail.ts`、修改 `types/index.ts`
 
@@ -136,35 +136,35 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 
 ---
 
-#### Phase B — OpenCode 流式透传（细粒度步骤）
+#### Phase B — OpenCode 流式透传（细粒度步骤） ✅
 
 > 依赖 Phase A 的 EventBus。实现"正在读取 xxx.py"的实时步骤展示。
 
 **opencode_client 流式改造**
 
-- [ ] `proc.communicate()` 替换为 `async for line in proc.stdout` 逐行读取 NDJSON
-- [ ] 每行解析后通过 EventBus 实时转发（事件类型 `log` / `step`）
-- [ ] 保留 "last wins" 语义用于最终结果提取（`_parse_output` 的最终聚合逻辑不变）
-- [ ] cancel 机制适配：从 `asyncio.wait({comm_task, cancel_wait})` 改为流式循环中检查 cancel flag + `proc.kill()`
+- [x] `proc.communicate()` 替换为 `async for line in proc.stdout` 逐行读取 NDJSON
+- [x] 每行解析后通过 EventBus 实时转发（事件类型 `opencode_step`，通过 `on_event` 回调桥接）
+- [x] 保留 "last wins" 语义用于最终结果提取（`_parse_output` 的最终聚合逻辑不变）
+- [x] cancel 机制适配：从 `asyncio.wait({comm_task, cancel_wait})` 改为流式循环中检查 cancel flag + `proc.kill()`
 
 涉及文件：修改 `opencode_client.py`
 
 **tool_use 事件解析**
 
-- [ ] 运行 OpenCode `--format json` 确认 stdout 中 `tool_use` 事件的实际 JSON 结构
-- [ ] 解析 tool_use 事件（grep / read / edit / shell），提取操作类型 + 目标文件路径
-- [ ] 如果 OpenCode 不输出 tool_use 事件 → 降级为只推送 `parts` 级别事件（仍优于 Phase A）
+- [x] 新增 `_classify_event()` 解析 tool_use 事件（grep / read / edit / shell），提取操作类型 + 目标文件路径
+- [x] 如果 OpenCode 不输出 tool_use 事件 → 降级为推送 `parts` 级别文本摘要事件（仍优于 Phase A）
 
 涉及文件：修改 `opencode_client.py`
 
 **前端步骤列表**
 
-- [ ] 新增 `StepList.tsx`：展示 OpenCode 实时步骤流（"正在读取 xxx.py"、"正在修改 yyy.py"、"正在执行 pytest"）
-- [ ] `IssueDetail.tsx` 的 Tabs 中新增"实时步骤"tab 挂载 `StepList`
+- [x] 新增 `StepList.tsx`：展示 OpenCode 实时步骤流（"读取 xxx.py"、"修改 yyy.py"、"执行 pytest"）
+- [x] `IssueDetail.tsx` 的 Tabs 中新增"实时步骤"tab 挂载 `StepList`
+- [x] `useIssueDetail.ts` 新增 `steps` 状态，`opencode_step` 事件直接累积到 state（不触发 REST re-fetch）
 
-涉及文件：新增前端 `StepList.tsx`、修改 `IssueDetail.tsx`
+涉及文件：新增前端 `StepList.tsx`、修改 `IssueDetail.tsx`、修改 `useIssueDetail.ts`、修改 `types/index.ts`
 
-**Phase B 验收标准**：AI 执行中，用户在浏览器实时看到"正在读取 xxx.py"、"正在修改 yyy.py"等步骤流。
+**Phase B 验收标准**：AI 执行中，用户在浏览器实时看到"读取 xxx.py"、"修改 yyy.py"等步骤流。
 
 ---
 

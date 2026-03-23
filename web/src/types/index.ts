@@ -79,9 +79,19 @@ export type SSEEventType =
   | 'git_commit'
   | 'git_push'
   | 'pr_created'
-  | 'task_cancelled';
+  | 'task_cancelled'
+  | 'opencode_step';
 
 export interface SSEEvent {
   type: SSEEventType;
   data: Record<string, unknown>;
+}
+
+// OpenCode streaming step — real-time AI operation visibility
+export interface OpenCodeStep {
+  step_type: 'tool_use' | 'text';
+  tool?: string;        // read, edit, shell, grep, ...
+  target?: string;      // file path or command
+  summary?: string;     // text summary (for step_type === 'text')
+  timestamp?: string;   // ISO 8601 from SSE event envelope
 }

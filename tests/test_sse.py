@@ -106,3 +106,34 @@ async def test_stream_cleans_up_subscriber(sse_client):
 
     # After stream closes, subscriber should have been cleaned up
     assert event_bus.subscriber_count(issue_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_receives_opencode_step_events(sse_client):
+    """SSE stream should contain opencode_step events published via EventBus."""
+    client, event_bus = sse_client
+    resp = await client.post("/api/issues", json={"title": "Step Events"})
+    issue_id = resp.json()["id"]
+
+    async def _publish_events():
+        await asyncio.sleep(0.05)
+        event_bus.publish(issue_id, "opencode_step", {
+            "step_type": "tool_use", "tool": "read", "target": "main.py",
+        })
+        await asyncio.sleep(0.02)
+        event_bus.publish(issue_id, "opencode_step", {
+            "step_type": "text", "summary": "Analyzing the code...",
+        })
+        await asyncio.sleep(0.02)
+        event_bus.publish(issue_id, "task_end", {"issue_id": issue_id, "success": True})
+
+    asyncio.create_task(_publish_events())
+
+    resp = await client.get(f"/api/issues/{issue_id}/stream")
+    body = resp.text
+
+    assert "event: opencode_step" in body
+    assert '"tool": "read"' in body
+    assert '"target": "main.py"' in body
+    assert "Analyzing the code" in body
+    assert "event: task_end" in body

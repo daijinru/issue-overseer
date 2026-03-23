@@ -23,6 +23,7 @@ function App() {
     issue: selectedIssue,
     executions,
     logs,
+    steps,
     loading: detailLoading,
     refresh: refreshDetail,
   } = useIssueDetail(selectedIssueId);
@@ -65,6 +66,7 @@ function App() {
             issue={selectedIssue}
             executions={executions}
             logs={logs}
+            steps={steps}
             loading={detailLoading}
             onActionDone={handleActionDone}
           />

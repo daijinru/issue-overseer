@@ -22,7 +22,7 @@ class MockOpenCodeClient:
         self.prompts_received: list[str] = []
         self._workspace = workspace
 
-    async def run_prompt(self, prompt, *, cwd=".", cancel_event=None):
+    async def run_prompt(self, prompt, *, cwd=".", cancel_event=None, on_event=None):
         self.prompts_received.append(prompt)
         if self.call_count >= len(self.responses):
             raise Exception("No more mock responses")
@@ -390,3 +390,45 @@ async def test_cancelled_issue_can_rerun(mock_runtime, tmp_git_repo):
 
     updated = await repo.get(issue.id)
     assert updated.status == IssueStatus.done
+
+
+# ── EventBus integration tests ──
+
+
+@pytest.mark.asyncio
+async def test_run_attempt_emits_opencode_step_events(mock_runtime, tmp_git_repo):
+    """Runtime should emit opencode_step events via EventBus when OpenCode streams events."""
+    from mango.server.event_bus import EventBus
+
+    event_bus = EventBus()
+    runtime = mock_runtime
+    runtime._event_bus = event_bus
+
+    # Subscribe to the issue's events
+    repo = IssueRepo()
+    issue = await repo.create(IssueCreate(title="Step events", description="test"))
+    queue = event_bus.subscribe(issue.id)
+
+    mock_client = MockOpenCodeClient(["Success result"], workspace=tmp_git_repo)
+    runtime.client = mock_client
+    runtime.skill.client = mock_client
+    _mock_push_and_pr(runtime)
+
+    await runtime.start_task(issue.id)
+    task = runtime._running_tasks.get(issue.id)
+    if task:
+        await task
+
+    # Collect all events from the queue
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    event_types = [e["type"] for e in events]
+    # Should have structural events
+    assert "task_start" in event_types
+    assert "turn_start" in event_types
+    assert "attempt_start" in event_types
+    assert "attempt_end" in event_types
+    assert "turn_end" in event_types
+    assert "task_end" in event_types

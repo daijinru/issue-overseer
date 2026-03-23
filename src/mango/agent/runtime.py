@@ -204,10 +204,16 @@ class AgentRuntime:
         self._emit(issue_id, "attempt_start", {"execution_id": execution_id})
         start = time.monotonic()
         attempt_timeout = self.settings.opencode.timeout
+
+        # Bridge OpenCode streaming events to the EventBus
+        def on_opencode_event(event: dict) -> None:
+            self._emit(issue_id, "opencode_step", event)
+
         try:
             async with asyncio.timeout(attempt_timeout):
                 result_text = await self.skill.execute(
-                    ctx, cwd, cancel_event=cancel_event
+                    ctx, cwd, cancel_event=cancel_event,
+                    on_event=on_opencode_event,
                 )
             duration_ms = int((time.monotonic() - start) * 1000)
             await self._audit_commands(execution_id, result_text)

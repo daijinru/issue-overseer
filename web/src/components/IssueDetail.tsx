@@ -4,18 +4,21 @@ import {
   FileTextOutlined,
   FolderOutlined,
   HistoryOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { IssueStatusTag } from './StatusTag';
 import { ActionButtons } from './ActionButtons';
 import { RetryInput } from './RetryInput';
 import { ExecutionTimeline } from './ExecutionTimeline';
 import { LogViewer } from './LogViewer';
-import type { Issue, Execution, ExecutionLog } from '../types';
+import { StepList } from './StepList';
+import type { Issue, Execution, ExecutionLog, OpenCodeStep } from '../types';
 
 interface IssueDetailProps {
   issue: Issue | null;
   executions: Execution[];
   logs: ExecutionLog[];
+  steps: OpenCodeStep[];
   loading: boolean;
   onActionDone: () => void;
 }
@@ -24,6 +27,7 @@ export function IssueDetail({
   issue,
   executions,
   logs,
+  steps,
   loading,
   onActionDone,
 }: IssueDetailProps) {
@@ -58,6 +62,7 @@ export function IssueDetail({
   }
 
   const isWaiting = issue.status === 'failed' || issue.status === 'waiting_human';
+  const isRunning = issue.status === 'running';
 
   return (
     <div style={{ padding: 24, height: '100%', overflow: 'auto' }}>
@@ -145,11 +150,20 @@ export function IssueDetail({
         onRetryDone={onActionDone}
       />
 
-      {/* Tabs: executions + logs */}
+      {/* Tabs: live steps + executions + logs */}
       <Tabs
-        defaultActiveKey="executions"
+        defaultActiveKey={isRunning ? 'steps' : 'executions'}
         style={{ marginTop: 16 }}
         items={[
+          {
+            key: 'steps',
+            label: (
+              <span>
+                <ThunderboltOutlined /> 实时步骤{steps.length > 0 ? ` (${steps.length})` : ''}
+              </span>
+            ),
+            children: <StepList steps={steps} isRunning={isRunning} />,
+          },
           {
             key: 'executions',
             label: (

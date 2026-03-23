@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from mango.agent.opencode_client import OpenCodeClient
 from mango.agent.safety import build_safety_prompt
@@ -14,7 +15,8 @@ from mango.models import TurnContext
 class BaseSkill(ABC):
     @abstractmethod
     async def execute(self, ctx: TurnContext, cwd: str, *,
-                      cancel_event: asyncio.Event | None = None) -> str:
+                      cancel_event: asyncio.Event | None = None,
+                      on_event: Callable[[dict], None] | None = None) -> str:
         ...
 
 
@@ -23,9 +25,12 @@ class GenericSkill(BaseSkill):
         self.client = client
 
     async def execute(self, ctx: TurnContext, cwd: str, *,
-                      cancel_event: asyncio.Event | None = None) -> str:
+                      cancel_event: asyncio.Event | None = None,
+                      on_event: Callable[[dict], None] | None = None) -> str:
         prompt = self._build_prompt(ctx)
-        return await self.client.run_prompt(prompt, cwd=cwd, cancel_event=cancel_event)
+        return await self.client.run_prompt(
+            prompt, cwd=cwd, cancel_event=cancel_event, on_event=on_event,
+        )
 
     def _build_prompt(self, ctx: TurnContext) -> str:
         settings = get_settings()

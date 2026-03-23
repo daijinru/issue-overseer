@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getIssue, getIssueExecutions, getIssueLogs } from '../api/client';
 import { usePolling } from './usePolling';
-import type { Issue, Execution, ExecutionLog, SSEEventType } from '../types';
+import type { Issue, Execution, ExecutionLog, SSEEventType, OpenCodeStep } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
 /** Terminal SSE events that signal the stream should close. */
 const TERMINAL_EVENTS: SSEEventType[] = ['task_end', 'task_cancelled'];
 
-/** All SSE event types we care about — each triggers a data refresh. */
-const SSE_EVENTS: SSEEventType[] = [
+/** SSE event types that trigger a full data refresh. */
+const REFRESH_EVENTS: SSEEventType[] = [
   'task_start', 'task_end',
   'turn_start', 'turn_end',
   'attempt_start', 'attempt_end',
@@ -17,10 +17,14 @@ const SSE_EVENTS: SSEEventType[] = [
   'task_cancelled',
 ];
 
+/** All SSE event types we listen to — refresh events + streaming events. */
+const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'opencode_step'];
+
 export function useIssueDetail(issueId: string | null) {
   const [issue, setIssue] = useState<Issue | null>(null);
   const [executions, setExecutions] = useState<Execution[]>([]);
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
+  const [steps, setSteps] = useState<OpenCodeStep[]>([]);
   const [loading, setLoading] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
 
@@ -54,6 +58,7 @@ export function useIssueDetail(issueId: string | null) {
       setIssue(null);
       setExecutions([]);
       setLogs([]);
+      setSteps([]);
     }
   }, [issueId, fetchDetail]);
 
@@ -79,11 +84,26 @@ export function useIssueDetail(issueId: string | null) {
       setSseConnected(true);
     };
 
-    // Register a handler per event type.  On every meaningful event we
-    // simply re-fetch the full detail — cheap, reliable, no state-merging
-    // complexity.
-    for (const eventType of SSE_EVENTS) {
-      es.addEventListener(eventType, () => {
+    // Register a handler per event type.
+    for (const eventType of ALL_SSE_EVENTS) {
+      es.addEventListener(eventType, (evt) => {
+        if (eventType === 'opencode_step') {
+          // Accumulate step events directly from SSE data — no REST re-fetch.
+          try {
+            const stepData = JSON.parse((evt as MessageEvent).data) as OpenCodeStep;
+            setSteps((prev) => [...prev, stepData]);
+          } catch {
+            // Ignore parse errors
+          }
+          return;
+        }
+
+        // Clear steps on new task start
+        if (eventType === 'task_start') {
+          setSteps([]);
+        }
+
+        // All other events trigger a full data refresh.
         fetchDetail();
 
         // Terminal event → close the stream; the final fetchDetail() above
@@ -118,6 +138,7 @@ export function useIssueDetail(issueId: string | null) {
     issue,
     executions,
     logs,
+    steps,
     loading,
     sseConnected,
     refresh: fetchDetail,
