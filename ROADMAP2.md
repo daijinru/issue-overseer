@@ -14,35 +14,35 @@ Phase 0–2 全部完成。核心链路可跑通：Issue CRUD → Agent Runtime 
 
 ### P0 — 必须修
 
-| # | 问题 | 现状 | 影响 |
-|---|------|------|------|
-| 1 | **缺少 PR 环节** | Agent commit 到分支就结束，没有 push，没有 PR | "代码出去"没有出口，用户要手动建 PR，code review 和 CI 无法介入 |
-| 2 | **服务重启状态丢失** | cancel_tokens / running_tasks 存内存 | 重启后 Issue 卡在 `running`，永远无法再触发，只能手动改库 |
-| 3 | **成功判定粗糙** | OpenCode 返回非空即 `success=True` | 错误信息也被当作成功结果，空 commit 也算完成 |
+| # | 问题 | 现状 | 影响 | 状态 |
+|---|------|------|------|------|
+| 1 | **缺少 PR 环节** | Agent commit 到分支就结束，没有 push，没有 PR | "代码出去"没有出口，用户要手动建 PR，code review 和 CI 无法介入 | ✅ 已修：`runtime.py` 新增 `_git_push()` + `_create_pr()`，Issue 模型加 `pr_url`，配置加 `remote` / `pr_base` |
+| 2 | **服务重启状态丢失** | cancel_tokens / running_tasks 存内存 | 重启后 Issue 卡在 `running`，永远无法再触发，只能手动改库 | ✅ 已修：`runtime.py` 新增 `recover_from_restart()`，`app.py` 启动时调用，stuck issue → `waiting_human` + 日志 |
+| 3 | **成功判定粗糙** | OpenCode 返回非空即 `success=True` | 错误信息也被当作成功结果，空 commit 也算完成 | ✅ 已修：`_git_commit()` 重写，先检查 `git diff --name-only` + `git diff --cached --quiet`，无改动 → `waiting_human`，去掉 `--allow-empty` |
 
 ### P1 — 尽快修
 
-| # | 问题 | 现状 |
-|---|------|------|
-| 4 | **git 操作不健壮** | 分支已存在时 `checkout -b` 静默失败；`git add -A` 无过滤；`--allow-empty` 提交空 commit |
-| 5 | **状态机漏洞** | `cancelled` 无法重新 run；retry 的状态转换无事务保护 |
-| 6 | **DB 连接管理** | 每次操作新建连接，高频写入可能 `database is locked` |
+| # | 问题 | 现状 | 状态 |
+|---|------|------|------|
+| 4 | **git 操作不健壮** | 分支已存在时 `checkout -b` 静默失败；`git add -A` 无过滤；`--allow-empty` 提交空 commit | ✅ 已修：`_git_create_branch()` 先 `rev-parse --verify` 判断分支存在；`git add` 改为只 add `diff --name-only` + `ls-files --others --exclude-standard` 的文件；去掉 `--allow-empty` |
+| 5 | **状态机漏洞** | `cancelled` 无法重新 run；retry 的状态转换无事务保护 | ✅ 部分修：`cancelled` 可重新 run（`routes.py` + `runtime.py`）；`update_fields` 加字段白名单。retry 事务保护尚未实现 |
+| 6 | **DB 连接管理** | 每次操作新建连接，高频写入可能 `database is locked` | ✅ 已修：`connection.py` 改为共享连接模式，`init_db()` 后复用单连接，加 `PRAGMA busy_timeout=5000`，shutdown 时关闭 |
 
 ### P2 — 有空修
 
-| # | 问题 | 现状 |
-|---|------|------|
-| 7 | **安全约束是软防护** | prompt 注入规则 LLM 可以忽略，审计依赖 markdown 格式，事后补救 |
-| 8 | **workspace 无校验** | 用户可传任意路径（`/etc`），Agent 就在那执行 |
-| 9 | **update_fields 字段名拼接** | 字段名直接拼入 SQL，当前调用安全但接口有隐患 |
-| 10 | **前端无实时反馈** | 3 秒轮询，执行中无日志，API 失败无提示 |
-| 11 | **Issue 不可编辑删除** | 创建后无法修改标题/描述，无法删除 |
+| # | 问题 | 现状 | 状态 |
+|---|------|------|------|
+| 7 | **安全约束是软防护** | prompt 注入规则 LLM 可以忽略，审计依赖 markdown 格式，事后补救 | 未修 |
+| 8 | **workspace 无校验** | 用户可传任意路径（`/etc`），Agent 就在那执行 | 未修 |
+| 9 | **update_fields 字段名拼接** | 字段名直接拼入 SQL，当前调用安全但接口有隐患 | ✅ 已修：`repos.py` 新增 `_ALLOWED_ISSUE_FIELDS` 白名单校验 |
+| 10 | **前端无实时反馈** | 3 秒轮询，执行中无日志，API 失败无提示 | 未修 |
+| 11 | **Issue 不可编辑删除** | 创建后无法修改标题/描述，无法删除 | 未修 |
 
 ### P3 — 记录备忘
 
-| # | 问题 |
-|---|------|
-| 12 | 测试覆盖不足（Runtime 完整路径、cancel、状态机边界、前端零测试） |
+| # | 问题 | 状态 |
+|---|------|------|
+| 12 | 测试覆盖不足（Runtime 完整路径、cancel、状态机边界、前端零测试） | ⚡ 部分改善：新增 ~200 行 runtime 测试（PR 流程、空 commit 检测、重启恢复、分支已存在、cancelled 重新 run）+ DB 白名单测试。前端仍零测试 |
 | 13 | 无结构化日志（难以关联 Issue 完整执行链路） |
 
 ---
