@@ -571,10 +571,10 @@ export const KANBAN_COLUMNS = [
 
 #### 验收标准
 
-- [ ] 卡片点击弹出 Card Detail Modal，左侧元数据、右侧实时步骤
-- [ ] Modal 中 SpecCard 展示 Spec 内容（当 Issue 有 spec 时）
-- [ ] SSE 实时更新在 Modal 右侧面板仍正常工作
-- [ ] Modal 关闭后回到看板，状态保持一致
+- [x] 卡片点击弹出 Card Detail Modal，左侧元数据、右侧实时步骤
+- [x] Modal 中 SpecCard 展示 Spec 内容（当 Issue 有 spec 时）
+- [x] SSE 实时更新在 Modal 右侧面板仍正常工作
+- [x] Modal 关闭后回到看板，状态保持一致
 
 ---
 

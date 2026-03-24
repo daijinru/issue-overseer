@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { Layout, ConfigProvider, theme } from 'antd';
 import { TopBar } from './components/TopBar';
 import { KanbanBoard } from './components/KanbanBoard';
-import { IssueDetail } from './components/IssueDetail';
+import { CardDetailModal } from './components/CardDetailModal';
 import { useIssues } from './hooks/useIssues';
 import { useIssueDetail } from './hooks/useIssueDetail';
 import type { Issue } from './types';
@@ -60,24 +60,17 @@ function App() {
         </Content>
       </Layout>
 
-      {/* Issue detail — reuse existing IssueDetail as a side panel overlay */}
-      {selectedIssue && (
-        <div className="detail-overlay" onClick={handleCloseDetail}>
-          <div
-            className="detail-panel"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <IssueDetail
-              issue={detailedIssue}
-              executions={executions}
-              logs={logs}
-              steps={steps}
-              loading={detailLoading}
-              onActionDone={handleActionDone}
-            />
-          </div>
-        </div>
-      )}
+      {/* Card Detail Modal — left/right split layout */}
+      <CardDetailModal
+        open={!!selectedIssue}
+        issue={detailedIssue}
+        executions={executions}
+        logs={logs}
+        steps={steps}
+        loading={detailLoading}
+        onClose={handleCloseDetail}
+        onActionDone={handleActionDone}
+      />
     </ConfigProvider>
   );
 }

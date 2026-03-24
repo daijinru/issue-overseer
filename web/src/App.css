@@ -139,24 +139,98 @@ html, body, #root {
   }
 }
 
-/* ========== Detail Overlay (card click → IssueDetail) ========== */
+/* ========== Card Detail Modal (left/right split) ========== */
 
-.detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  z-index: 1000;
+.cdm-loading {
   display: flex;
   justify-content: center;
   align-items: center;
+  height: 100%;
+  min-height: 300px;
 }
 
-.detail-panel {
-  width: 80vw;
-  max-width: 960px;
-  height: 85vh;
-  background: #fff;
-  border-radius: 12px;
-  overflow: auto;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+.cdm-body {
+  display: flex;
+  height: 100%;
+}
+
+/* Left panel: ~35% width */
+.cdm-left {
+  width: 35%;
+  min-width: 280px;
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cdm-left-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* Right panel: ~65% width */
+.cdm-right {
+  width: 65%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cdm-section {
+  margin-bottom: 16px;
+}
+
+/* Metadata grid in left panel */
+.cdm-meta-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cdm-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Right panel Tabs fill height */
+.cdm-tabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0 16px;
+}
+
+.cdm-tabs .ant-tabs-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.cdm-tabs .ant-tabs-tabpane {
+  height: 100%;
+}
+
+.cdm-tab-content {
+  height: 100%;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+
+/* Responsive: stack on small screens */
+@media (max-width: 768px) {
+  .cdm-body {
+    flex-direction: column;
+  }
+  .cdm-left {
+    width: 100%;
+    min-width: unset;
+    border-right: none;
+    border-bottom: 1px solid #f0f0f0;
+    max-height: 40vh;
+  }
+  .cdm-right {
+    width: 100%;
+    flex: 1;
+  }
 }
