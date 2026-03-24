@@ -8,9 +8,11 @@ import type { Issue, IssueStatus } from '../types';
 const STATUS_OPTIONS: Array<{ label: string; value: IssueStatus | 'all' }> = [
   { label: '全部', value: 'all' },
   { label: '待处理', value: 'open' },
+  { label: '方案中', value: 'planning' },
+  { label: '已规划', value: 'planned' },
   { label: '执行中', value: 'running' },
+  { label: '待审查', value: 'review' },
   { label: '已完成', value: 'done' },
-  { label: '失败', value: 'failed' },
   { label: '等待指令', value: 'waiting_human' },
 ];
 

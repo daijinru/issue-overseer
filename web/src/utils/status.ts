@@ -3,9 +3,11 @@ import type { IssueStatus, ExecutionStatus } from '../types';
 // Issue status → Ant Design Tag color
 export const issueStatusColor: Record<IssueStatus, string> = {
   open: 'blue',
+  planning: 'processing',
+  planned: 'purple',
   running: 'processing',
+  review: 'cyan',
   done: 'success',
-  failed: 'error',
   waiting_human: 'warning',
   cancelled: 'default',
 };
@@ -13,9 +15,11 @@ export const issueStatusColor: Record<IssueStatus, string> = {
 // Issue status → Chinese label
 export const issueStatusLabel: Record<IssueStatus, string> = {
   open: '待处理',
+  planning: '生成方案中',
+  planned: '方案就绪',
   running: '执行中',
+  review: '待审查',
   done: '已完成',
-  failed: '失败',
   waiting_human: '等待指令',
   cancelled: '已取消',
 };

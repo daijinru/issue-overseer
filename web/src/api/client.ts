@@ -4,6 +4,7 @@ import type {
   ExecutionLog,
   ExecutionStep,
   IssueCreateRequest,
+  IssueEditRequest,
   IssueRetryRequest,
   IssueStatus,
 } from '../types';
@@ -80,4 +81,45 @@ export function getIssueExecutions(id: string) {
 
 export function getIssueSteps(id: string) {
   return request<ExecutionStep[]>(`/api/issues/${id}/steps`);
+}
+
+// Kanban actions
+export function planIssue(id: string) {
+  return request<{ message: string; issue_id: string }>(
+    `/api/issues/${id}/plan`,
+    { method: 'POST' },
+  );
+}
+
+export function updateSpec(id: string, spec: string) {
+  return request<Issue>(`/api/issues/${id}/spec`, {
+    method: 'PUT',
+    body: JSON.stringify({ spec }),
+  });
+}
+
+export function rejectSpec(id: string) {
+  return request<Issue>(`/api/issues/${id}/reject-spec`, {
+    method: 'POST',
+  });
+}
+
+export function completeIssue(id: string) {
+  return request<Issue>(`/api/issues/${id}/complete`, {
+    method: 'POST',
+  });
+}
+
+// Issue edit & delete
+export function editIssue(id: string, data: IssueEditRequest) {
+  return request<Issue>(`/api/issues/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteIssue(id: string) {
+  return request<{ message: string }>(`/api/issues/${id}`, {
+    method: 'DELETE',
+  });
 }

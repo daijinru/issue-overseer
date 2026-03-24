@@ -17,7 +17,7 @@ export function RetryInput({ issueId, status, failureReason, currentWorkspace, o
   const [workspace, setWorkspace] = useState(currentWorkspace ?? '');
   const [loading, setLoading] = useState(false);
 
-  const canRetry = status === 'failed' || status === 'waiting_human';
+  const canRetry = status === 'waiting_human';
 
   // Highlight workspace input when the failure is about workspace / git repo
   const isWorkspaceError = failureReason

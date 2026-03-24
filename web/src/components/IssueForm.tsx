@@ -1,12 +1,19 @@
 import { useState } from 'react';
-import { Modal, Form, Input, message } from 'antd';
+import { Modal, Form, Input, Select, message } from 'antd';
 import { createIssue } from '../api/client';
+import type { IssuePriority } from '../types';
 
 interface IssueFormProps {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
 }
+
+const PRIORITY_OPTIONS: Array<{ label: string; value: IssuePriority }> = [
+  { label: 'High', value: 'high' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Low', value: 'low' },
+];
 
 export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
   const [form] = Form.useForm();
@@ -20,6 +27,7 @@ export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
         title: values.title,
         description: values.description || '',
         workspace: values.workspace || undefined,
+        priority: values.priority || 'medium',
       });
       message.success('Issue 创建成功');
       form.resetFields();
@@ -45,7 +53,7 @@ export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
       okText="创建"
       cancelText="取消"
     >
-      <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" initialValues={{ priority: 'medium' }}>
         <Form.Item
           name="title"
           label="标题"
@@ -58,6 +66,9 @@ export function IssueForm({ open, onClose, onCreated }: IssueFormProps) {
             rows={4}
             placeholder="详细描述任务内容（可选）"
           />
+        </Form.Item>
+        <Form.Item name="priority" label="优先级">
+          <Select options={PRIORITY_OPTIONS} />
         </Form.Item>
         <Form.Item
           name="workspace"

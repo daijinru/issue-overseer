@@ -1,11 +1,16 @@
 // Issue statuses — mirrors backend IssueStatus enum
 export type IssueStatus =
   | 'open'
+  | 'planning'
+  | 'planned'
   | 'running'
+  | 'review'
   | 'done'
-  | 'failed'
   | 'waiting_human'
   | 'cancelled';
+
+// Issue priority — mirrors backend IssuePriority enum
+export type IssuePriority = 'high' | 'medium' | 'low';
 
 // Execution statuses — mirrors backend ExecutionStatus enum
 export type ExecutionStatus =
@@ -28,6 +33,9 @@ export interface Issue {
   human_instruction: string | null;
   failure_reason: string | null;
   workspace: string | null;
+  pr_url: string | null;
+  priority: IssuePriority;
+  spec: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -74,11 +82,19 @@ export interface IssueCreateRequest {
   title: string;
   description?: string;
   workspace?: string;
+  priority?: IssuePriority;
 }
 
 export interface IssueRetryRequest {
   human_instruction?: string;
   workspace?: string;
+}
+
+// Edit issue request
+export interface IssueEditRequest {
+  title?: string;
+  description?: string;
+  priority?: IssuePriority;
 }
 
 // SSE event types — mirrors backend EventBus event_type values
@@ -93,6 +109,8 @@ export type SSEEventType =
   | 'git_push'
   | 'pr_created'
   | 'task_cancelled'
+  | 'plan_start'
+  | 'plan_end'
   | 'opencode_step';
 
 export interface SSEEvent {

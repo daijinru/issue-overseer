@@ -61,7 +61,7 @@ export function IssueDetail({
     );
   }
 
-  const isWaiting = issue.status === 'failed' || issue.status === 'waiting_human';
+  const isWaiting = issue.status === 'waiting_human';
   const isRunning = issue.status === 'running';
 
   return (

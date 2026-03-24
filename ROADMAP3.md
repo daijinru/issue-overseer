@@ -542,12 +542,12 @@ export const KANBAN_COLUMNS = [
 
 #### 验收标准
 
-- [ ] 五列看板正确渲染，每列显示标题 + Agent 角色 + Issue 数量
-- [ ] Issue 按状态归入对应列
-- [ ] `waiting_human` Issue 在失败时所在列显示，带 ⚠ 徽章
-- [ ] 卡片显示标题、优先级、状态 Tag
-- [ ] 列内卡片按优先级排序
-- [ ] 卡片点击打开 `IssueDetail`（复用现有组件，3b 步再替换为 Modal）
+- [x] 五列看板正确渲染，每列显示标题 + Agent 角色 + Issue 数量
+- [x] Issue 按状态归入对应列
+- [x] `waiting_human` Issue 在失败时所在列显示，带 ⚠ 徽章
+- [x] 卡片显示标题、优先级、状态 Tag
+- [x] 列内卡片按优先级排序
+- [x] 卡片点击打开 `IssueDetail`（复用现有组件，3b 步再替换为 Modal）
 
 ---
 

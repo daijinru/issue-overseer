@@ -1,37 +1,44 @@
 import { useState, useCallback } from 'react';
 import { Layout, ConfigProvider, theme } from 'antd';
-import { IssueList } from './components/IssueList';
+import { TopBar } from './components/TopBar';
+import { KanbanBoard } from './components/KanbanBoard';
 import { IssueDetail } from './components/IssueDetail';
 import { useIssues } from './hooks/useIssues';
 import { useIssueDetail } from './hooks/useIssueDetail';
+import type { Issue } from './types';
 import './App.css';
 
-const { Sider, Content } = Layout;
+const { Content } = Layout;
 
 function App() {
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
 
   const {
     issues,
-    loading: issuesLoading,
-    statusFilter,
-    setStatusFilter,
     refresh: refreshIssues,
   } = useIssues();
 
   const {
-    issue: selectedIssue,
+    issue: detailedIssue,
     executions,
     logs,
     steps,
     loading: detailLoading,
     refresh: refreshDetail,
-  } = useIssueDetail(selectedIssueId);
+  } = useIssueDetail(selectedIssue?.id ?? null);
 
   const handleActionDone = useCallback(() => {
     refreshIssues();
     refreshDetail();
   }, [refreshIssues, refreshDetail]);
+
+  const handleCardClick = useCallback((issue: Issue) => {
+    setSelectedIssue(issue);
+  }, []);
+
+  const handleCloseDetail = useCallback(() => {
+    setSelectedIssue(null);
+  }, []);
 
   return (
     <ConfigProvider
@@ -39,39 +46,38 @@ function App() {
         algorithm: theme.defaultAlgorithm,
       }}
     >
-      <Layout style={{ height: '100vh' }}>
-        <Sider
-          width={360}
-          theme="light"
-          style={{
-            borderRight: '1px solid #f0f0f0',
-            overflow: 'hidden',
-          }}
-        >
-          <IssueList
+      <Layout style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <TopBar
+          issues={issues}
+          onCreated={refreshIssues}
+          onRefresh={refreshIssues}
+        />
+        <Content style={{ flex: 1, overflow: 'hidden', background: '#f5f5f5' }}>
+          <KanbanBoard
             issues={issues}
-            loading={issuesLoading}
-            selectedId={selectedIssueId}
-            statusFilter={statusFilter}
-            onSelect={setSelectedIssueId}
-            onStatusFilterChange={setStatusFilter}
-            onRefresh={refreshIssues}
-            onCreated={() => {
-              refreshIssues();
-            }}
-          />
-        </Sider>
-        <Content style={{ background: '#fff', overflow: 'hidden' }}>
-          <IssueDetail
-            issue={selectedIssue}
-            executions={executions}
-            logs={logs}
-            steps={steps}
-            loading={detailLoading}
-            onActionDone={handleActionDone}
+            onCardClick={handleCardClick}
           />
         </Content>
       </Layout>
+
+      {/* Issue detail — reuse existing IssueDetail as a side panel overlay */}
+      {selectedIssue && (
+        <div className="detail-overlay" onClick={handleCloseDetail}>
+          <div
+            className="detail-panel"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <IssueDetail
+              issue={detailedIssue}
+              executions={executions}
+              logs={logs}
+              steps={steps}
+              loading={detailLoading}
+              onActionDone={handleActionDone}
+            />
+          </div>
+        </div>
+      )}
     </ConfigProvider>
   );
 }
