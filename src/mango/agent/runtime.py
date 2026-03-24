@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -16,6 +17,7 @@ from mango.config import get_settings
 from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
 from mango.models import ExecutionStatus, Issue, IssueStatus, LogLevel
 from mango.skills.base import GenericSkill
+from mango.skills.plan import PlanSkill, extract_spec_json, validate_spec
 
 if TYPE_CHECKING:
     from mango.server.event_bus import EventBus
@@ -35,6 +37,7 @@ class AgentRuntime:
             timeout=self.settings.opencode.timeout,
         )
         self.skill = GenericSkill(self.client)
+        self.plan_skill = PlanSkill(self.client)
         self._cancel_tokens: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._event_bus = event_bus
@@ -54,42 +57,171 @@ class AgentRuntime:
         self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False, "failure_reason": reason})
 
     async def recover_from_restart(self) -> None:
-        """Recover issues stuck in 'running' after a service restart.
+        """Recover issues stuck in 'running' or 'planning' after a service restart.
 
         Sets them to 'waiting_human' and logs the interruption.
         """
-        stuck_issues = await self.issue_repo.list_all(status=IssueStatus.running)
-        for issue in stuck_issues:
-            logger.warning("Recovering stuck issue %s (%s)", issue.id, issue.title)
-            await self.issue_repo.update_fields(issue.id, failure_reason="服务重启，执行中断")
-            await self.issue_repo.update_status(issue.id, IssueStatus.waiting_human)
-            # Find the latest execution for this issue and log the interruption
-            executions = await self.exec_repo.list_by_issue(issue.id)
-            if executions:
-                latest_exec = executions[-1]
-                # Mark running executions as failed
-                if latest_exec.status == ExecutionStatus.running:
-                    await self.exec_repo.finish(
-                        latest_exec.id,
-                        status=ExecutionStatus.failed,
-                        error_message="服务重启，执行中断",
+        for stuck_status in (IssueStatus.running, IssueStatus.planning):
+            stuck_issues = await self.issue_repo.list_all(status=stuck_status)
+            for issue in stuck_issues:
+                logger.warning("Recovering stuck issue %s (%s) from %s", issue.id, issue.title, stuck_status.value)
+                await self.issue_repo.update_fields(issue.id, failure_reason="服务重启，执行中断")
+                await self.issue_repo.update_status(issue.id, IssueStatus.waiting_human)
+                # Find the latest execution for this issue and log the interruption
+                executions = await self.exec_repo.list_by_issue(issue.id)
+                if executions:
+                    latest_exec = executions[-1]
+                    # Mark running executions as failed
+                    if latest_exec.status == ExecutionStatus.running:
+                        await self.exec_repo.finish(
+                            latest_exec.id,
+                            status=ExecutionStatus.failed,
+                            error_message="服务重启，执行中断",
+                        )
+                    await self.log_repo.append(
+                        latest_exec.id, LogLevel.warn, "服务重启，执行中断"
                     )
-                await self.log_repo.append(
-                    latest_exec.id, LogLevel.warn, "服务重启，执行中断"
-                )
-            logger.info("Issue %s recovered to waiting_human", issue.id)
+                logger.info("Issue %s recovered to waiting_human", issue.id)
 
     async def start_task(self, issue_id: str) -> None:
         issue = await self.issue_repo.get(issue_id)
         if issue is None:
             raise ValueError(f"Issue {issue_id} not found")
-        if issue.status not in (IssueStatus.open, IssueStatus.waiting_human, IssueStatus.cancelled):
+        if issue.status not in (IssueStatus.open, IssueStatus.planned, IssueStatus.waiting_human, IssueStatus.cancelled):
             raise ValueError(f"Issue {issue_id} is in status {issue.status}, cannot run")
         cancel_event = asyncio.Event()
         self._cancel_tokens[issue_id] = cancel_event
         task = asyncio.create_task(self._run_task(issue_id, cancel_event))
         self._running_tasks[issue_id] = task
         task.add_done_callback(lambda _: self._cleanup(issue_id))
+
+    async def start_plan(self, issue_id: str) -> None:
+        """Generate Spec (open → planning → planned)."""
+        issue = await self.issue_repo.get(issue_id)
+        if issue is None:
+            raise ValueError(f"Issue {issue_id} not found")
+        if issue.status != IssueStatus.open:
+            raise ValueError(f"Issue {issue_id} is in status {issue.status}, must be 'open' to plan")
+        cancel_event = asyncio.Event()
+        self._cancel_tokens[issue_id] = cancel_event
+        task = asyncio.create_task(self._run_plan(issue_id, cancel_event))
+        self._running_tasks[issue_id] = task
+        task.add_done_callback(lambda _: self._cleanup(issue_id))
+
+    async def _run_plan(self, issue_id: str, cancel_event: asyncio.Event) -> None:
+        """Execute the plan flow: open → planning → PlanSkill → planned.
+
+        Retry strategy: on JSON extraction failure, retry once with a stricter
+        prompt. If retry also fails → waiting_human.
+        """
+        issue = await self.issue_repo.get(issue_id)
+        assert issue is not None
+        await self.issue_repo.update_status(issue_id, IssueStatus.planning)
+        self._emit(issue_id, "plan_start", {"issue_id": issue_id})
+        workspace = self._resolve_workspace(issue)
+
+        ctx = build_turn_context(
+            issue=issue, turn_number=1, max_turns=1,
+            human_instruction=issue.human_instruction,
+        )
+
+        max_attempts = 2  # 1 normal + 1 strict retry
+        raw_output: str | None = None
+
+        try:
+            for attempt in range(max_attempts):
+                if cancel_event.is_set():
+                    await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
+                    self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
+                    return
+
+                # Build prompt: strict on retry
+                if attempt == 0:
+                    prompt = self.plan_skill._build_plan_prompt(ctx)
+                else:
+                    prompt = self.plan_skill.build_strict_prompt(ctx)
+                    logger.info("Plan %s: retrying with strict prompt (attempt %d)", issue_id, attempt + 1)
+
+                # Create execution record
+                execution_id = str(uuid.uuid4())
+                await self.exec_repo.create(
+                    execution_id=execution_id, issue_id=issue_id,
+                    turn_number=1, attempt_number=attempt + 1,
+                    prompt=prompt,
+                    context_snapshot=_context_to_dict(ctx), git_diff_snapshot=None,
+                )
+
+                # Bridge OpenCode streaming events to the EventBus
+                def on_opencode_event(event: dict) -> None:
+                    self._emit(issue_id, "opencode_step", event)
+                    asyncio.create_task(self._persist_step(execution_id, event))
+
+                try:
+                    async with asyncio.timeout(self.settings.opencode.timeout):
+                        raw_output = await self.plan_skill.client.run_prompt(
+                            prompt, cwd=workspace,
+                            cancel_event=cancel_event, on_event=on_opencode_event,
+                        )
+                    await self.exec_repo.finish(
+                        execution_id, status=ExecutionStatus.completed, result=raw_output,
+                    )
+                except TimeoutError:
+                    await self.exec_repo.finish(
+                        execution_id, status=ExecutionStatus.timeout,
+                        error_message="Plan generation timed out",
+                    )
+                    await self._fail_plan(issue_id, "Spec 生成超时")
+                    return
+                except asyncio.CancelledError:
+                    await self.exec_repo.finish(
+                        execution_id, status=ExecutionStatus.cancelled,
+                        error_message="Cancelled by user",
+                    )
+                    await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
+                    self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
+                    return
+                except Exception as e:
+                    await self.exec_repo.finish(
+                        execution_id, status=ExecutionStatus.failed,
+                        error_message=f"{type(e).__name__}: {e}",
+                    )
+                    await self._fail_plan(issue_id, f"Spec 生成异常: {e}")
+                    return
+
+                # Try to extract JSON from the output
+                spec_data = extract_spec_json(raw_output or "")
+                if spec_data is not None:
+                    validated = validate_spec(spec_data)
+                    spec_json = json.dumps(validated, ensure_ascii=False)
+                    await self.issue_repo.update_fields(issue_id, spec=spec_json)
+                    await self.issue_repo.update_status(issue_id, IssueStatus.planned)
+                    self._emit(issue_id, "plan_end", {
+                        "issue_id": issue_id, "success": True, "spec": validated,
+                    })
+                    return
+
+                # JSON extraction failed — will retry if attempts remain
+                logger.warning(
+                    "Plan %s: JSON extraction failed (attempt %d/%d)",
+                    issue_id, attempt + 1, max_attempts,
+                )
+
+            # All attempts exhausted — transition to waiting_human
+            truncated_output = (raw_output or "")[:2000]
+            await self._fail_plan(
+                issue_id,
+                f"Spec JSON 解析失败（已重试 {max_attempts} 次）。原始输出：\n{truncated_output}",
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in plan flow for %s", issue_id)
+            await self._fail_plan(issue_id, f"计划生成未预期错误: {e}")
+
+    async def _fail_plan(self, issue_id: str, reason: str) -> None:
+        """Mark issue as waiting_human after plan failure."""
+        logger.warning("Plan %s failed: %s", issue_id, reason)
+        await self.issue_repo.update_fields(issue_id, failure_reason=reason)
+        await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+        self._emit(issue_id, "plan_end", {"issue_id": issue_id, "success": False, "failure_reason": reason})
 
     async def cancel_task(self, issue_id: str) -> bool:
         cancel_event = self._cancel_tokens.get(issue_id)
@@ -202,10 +334,12 @@ class AgentRuntime:
                     if pr_url:
                         await self.issue_repo.update_fields(issue_id, pr_url=pr_url)
                         self._emit(issue_id, "pr_created", {"pr_url": pr_url})
+                        await self.issue_repo.update_status(issue_id, IssueStatus.review)
+                        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
                     else:
                         logger.warning("Task %s: PR creation failed (code is pushed)", issue_id)
-                    await self.issue_repo.update_status(issue_id, IssueStatus.done)
-                    self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
+                        await self.issue_repo.update_status(issue_id, IssueStatus.done)
+                        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": None})
         else:
             await self._fail_task(issue_id, "AI 执行未能解决问题，已用完所有重试轮次")
 
@@ -215,11 +349,13 @@ class AgentRuntime:
         fresh_issue = await self.issue_repo.get(issue.id)
         workspace = self._resolve_workspace(fresh_issue or issue)
         git_diff = await self._get_git_diff(cwd=workspace)
+        active_issue = fresh_issue or issue
         ctx = build_turn_context(
-            issue=fresh_issue or issue, turn_number=turn_number, max_turns=max_turns,
+            issue=active_issue, turn_number=turn_number, max_turns=max_turns,
             last_result=last_result, last_error=last_error, git_diff=git_diff,
             execution_history=execution_history,
-            human_instruction=(fresh_issue or issue).human_instruction,
+            human_instruction=active_issue.human_instruction,
+            spec=active_issue.spec,
         )
         execution_id = str(uuid.uuid4())
         await self.exec_repo.create(

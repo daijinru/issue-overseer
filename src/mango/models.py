@@ -13,11 +13,19 @@ from pydantic import BaseModel
 
 class IssueStatus(str, Enum):
     open = "open"
+    planning = "planning"
+    planned = "planned"
     running = "running"
+    review = "review"
     done = "done"
-    failed = "failed"
     waiting_human = "waiting_human"
     cancelled = "cancelled"
+
+
+class IssuePriority(str, Enum):
+    high = "high"
+    medium = "medium"
+    low = "low"
 
 
 class ExecutionStatus(str, Enum):
@@ -49,6 +57,8 @@ class Issue(BaseModel):
     workspace: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    priority: IssuePriority = IssuePriority.medium
+    spec: str | None = None
 
 
 class Execution(BaseModel):
@@ -98,11 +108,18 @@ class IssueCreate(BaseModel):
     title: str
     description: str = ""
     workspace: str | None = None
+    priority: IssuePriority = IssuePriority.medium
 
 
 class IssueRetry(BaseModel):
     human_instruction: str | None = None
     workspace: str | None = None
+
+
+class IssueUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    priority: IssuePriority | None = None
 
 
 # ── Runtime data structures ─────────────────────────────────────────
@@ -124,3 +141,4 @@ class TurnContext:
     git_diff: str | None = None
     execution_history: list[dict] = field(default_factory=list)
     human_instruction: str | None = None
+    spec: str | None = None

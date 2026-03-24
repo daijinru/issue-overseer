@@ -42,7 +42,7 @@ async def sse_stream(
             yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
 
             # Terminal events — close the stream after delivery
-            if event_type in ("task_end", "task_cancelled"):
+            if event_type in ("task_end", "task_cancelled", "plan_end"):
                 return
     except asyncio.CancelledError:
         # Client disconnected (or server shutting down)

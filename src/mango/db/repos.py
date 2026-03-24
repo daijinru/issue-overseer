@@ -13,6 +13,7 @@ from mango.models import (
     ExecutionStep,
     Issue,
     IssueCreate,
+    IssuePriority,
     IssueStatus,
     LogLevel,
 )
@@ -20,6 +21,7 @@ from mango.models import (
 
 _ALLOWED_ISSUE_FIELDS = frozenset({
     "branch_name", "human_instruction", "pr_url", "workspace", "failure_reason",
+    "priority", "spec",
 })
 
 
@@ -30,8 +32,8 @@ class IssueRepo:
         issue_id = str(uuid.uuid4())
         async with get_db_connection() as db:
             await db.execute(
-                "INSERT INTO issues (id, title, description, workspace) VALUES (?, ?, ?, ?)",
-                (issue_id, data.title, data.description, data.workspace),
+                "INSERT INTO issues (id, title, description, workspace, priority) VALUES (?, ?, ?, ?, ?)",
+                (issue_id, data.title, data.description, data.workspace, data.priority.value),
             )
             await db.commit()
             cursor = await db.execute(
@@ -51,18 +53,23 @@ class IssueRepo:
             return Issue(**dict(row))  # type: ignore[arg-type]
 
     async def list_all(
-        self, status: IssueStatus | None = None
+        self, status: IssueStatus | None = None,
+        priority: IssuePriority | None = None,
     ) -> list[Issue]:
         async with get_db_connection() as db:
+            conditions: list[str] = []
+            params: list[str] = []
             if status is not None:
-                cursor = await db.execute(
-                    "SELECT * FROM issues WHERE status = ? ORDER BY created_at DESC",
-                    (status.value,),
-                )
-            else:
-                cursor = await db.execute(
-                    "SELECT * FROM issues ORDER BY created_at DESC"
-                )
+                conditions.append("status = ?")
+                params.append(status.value)
+            if priority is not None:
+                conditions.append("priority = ?")
+                params.append(priority.value)
+            where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+            cursor = await db.execute(
+                f"SELECT * FROM issues{where} ORDER BY created_at DESC",
+                params,
+            )
             rows = await cursor.fetchall()
             return [Issue(**dict(r)) for r in rows]  # type: ignore[arg-type]
 
@@ -101,6 +108,34 @@ class IssueRepo:
                 (IssueStatus.open.value, issue_id),
             )
             await db.commit()
+
+    async def delete(self, issue_id: str) -> bool:
+        """Delete an issue and its associated executions/logs. Returns True if deleted."""
+        async with get_db_connection() as db:
+            # Delete execution logs via join
+            await db.execute(
+                """DELETE FROM execution_logs WHERE execution_id IN
+                   (SELECT id FROM executions WHERE issue_id = ?)""",
+                (issue_id,),
+            )
+            # Delete execution steps via join
+            await db.execute(
+                """DELETE FROM execution_steps WHERE execution_id IN
+                   (SELECT id FROM executions WHERE issue_id = ?)""",
+                (issue_id,),
+            )
+            # Delete executions
+            await db.execute(
+                "DELETE FROM executions WHERE issue_id = ?",
+                (issue_id,),
+            )
+            # Delete the issue itself
+            cursor = await db.execute(
+                "DELETE FROM issues WHERE id = ?",
+                (issue_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def update_fields(self, issue_id: str, **fields: object) -> None:
         if not fields:

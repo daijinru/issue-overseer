@@ -111,7 +111,7 @@ async def test_run_task_success_flow(mock_runtime, tmp_git_repo):
         await task
 
     updated = await repo.get(issue.id)
-    assert updated.status == IssueStatus.done
+    assert updated.status == IssueStatus.review
     assert updated.pr_url == "https://github.com/test/repo/pull/1"
     runtime._git_push.assert_awaited_once()
     runtime._create_pr.assert_awaited_once()
@@ -389,7 +389,7 @@ async def test_cancelled_issue_can_rerun(mock_runtime, tmp_git_repo):
         await task
 
     updated = await repo.get(issue.id)
-    assert updated.status == IssueStatus.done
+    assert updated.status == IssueStatus.review
 
 
 # ── EventBus integration tests ──

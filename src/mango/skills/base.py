@@ -52,4 +52,6 @@ class GenericSkill(BaseSkill):
             sections.append("## Execution History\n" + "\n".join(history_lines))
         if ctx.human_instruction:
             sections.append(f"## Additional Instructions from User\n{ctx.human_instruction}")
+        if ctx.spec:
+            sections.append(f"## Execution Plan (Spec)\n{ctx.spec}")
         return "\n\n".join(sections)

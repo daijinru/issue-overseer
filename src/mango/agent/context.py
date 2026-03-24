@@ -34,6 +34,7 @@ def build_turn_context(
     git_diff: str | None = None,
     execution_history: list[dict] | None = None,
     human_instruction: str | None = None,
+    spec: str | None = None,
 ) -> TurnContext:
     ctx_cfg = get_settings().context
     truncated_diff = _truncate_by_lines(git_diff, ctx_cfg.max_git_diff_lines)
@@ -47,4 +48,5 @@ def build_turn_context(
         git_diff=truncated_diff,
         execution_history=execution_history or [],
         human_instruction=human_instruction,
+        spec=spec,
     )
