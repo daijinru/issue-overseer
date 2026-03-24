@@ -446,16 +446,16 @@ POST /api/issues/{id}/reject-spec   拒绝 Spec（planned → open）
 
 ### 验收标准
 
-- [ ] `POST /plan` 触发 Spec 生成，状态 `open` → `planning` → `planned`
-- [ ] Issue 的 `spec` 字段包含有效 JSON（plan + acceptance_criteria + files）
-- [ ] `extract_spec_json()` 能处理：裸 JSON、markdown 代码块包裹、前后有解释文本 三种情况
-- [ ] JSON 提取失败时自动重试 1 次（stricter prompt），仍失败 → `waiting_human`
-- [ ] `validate_spec()` 宽松接受字段名大小写差异（snake_case / camelCase）
-- [ ] `PUT /spec` 允许用户编辑 Spec
-- [ ] `POST /reject-spec` 将 Issue 退回 `open`
-- [ ] `POST /run` 在 `planned` Issue 上执行时，prompt 包含 Spec 内容
-- [ ] `POST /run` 在 `open` Issue 上仍正常工作（跳过 Spec）
-- [ ] SSE 发送 `plan_start`、`plan_end` 事件
+- [x] `POST /plan` 触发 Spec 生成，状态 `open` → `planning` → `planned`
+- [x] Issue 的 `spec` 字段包含有效 JSON（plan + acceptance_criteria + files）
+- [x] `extract_spec_json()` 能处理：裸 JSON、markdown 代码块包裹、前后有解释文本 三种情况
+- [x] JSON 提取失败时自动重试 1 次（stricter prompt），仍失败 → `waiting_human`
+- [x] `validate_spec()` 宽松接受字段名大小写差异（snake_case / camelCase）
+- [x] `PUT /spec` 允许用户编辑 Spec
+- [x] `POST /reject-spec` 将 Issue 退回 `open`
+- [x] `POST /run` 在 `planned` Issue 上执行时，prompt 包含 Spec 内容
+- [x] `POST /run` 在 `open` Issue 上仍正常工作（跳过 Spec）
+- [x] SSE 发送 `plan_start`、`plan_end` 事件
 
 ---
 
