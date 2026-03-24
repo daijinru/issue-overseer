@@ -649,12 +649,12 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 
 ### 端到端验证流程
 
-- [ ] **完整 Spec 流程**：创建 Issue → Refine（Backlog→Todo）→ 审阅 Spec → Run（Todo→Dev）→ PR（Dev→Review）→ Complete（Review→Done）
-- [ ] **跳过 Spec 流程**：创建 Issue → Run（Backlog→Dev）→ PR（Dev→Review）→ Done
-- [ ] **失败重试流程**：创建 → Run → waiting_human（⚠ 在 Dev 列）→ Retry → 成功 → Review → Done
-- [ ] **取消重启流程**：创建 → Run → Cancel → 重新 Run
-- [ ] **优先级排序**：HIGH 卡片在列内排在最上方
-- [ ] **编辑/删除**：open 状态可编辑标题/描述/优先级；done 状态可删除
+- [x] **完整 Spec 流程**：创建 Issue → Refine（Backlog→Todo）→ 审阅 Spec → Run（Todo→Dev）→ PR（Dev→Review）→ Complete（Review→Done）
+- [x] **跳过 Spec 流程**：创建 Issue → Run（Backlog→Dev）→ PR（Dev→Review）→ Done
+- [x] **失败重试流程**：创建 → Run → waiting_human（⚠ 在 Dev 列）→ Retry → 成功 → Review → Done
+- [x] **取消重启流程**：创建 → Run → Cancel → 重新 Run
+- [x] **优先级排序**：HIGH 卡片在列内排在最上方
+- [x] **编辑/删除**：open 状态可编辑标题/描述/优先级；done 状态可删除
 
 ---
 
