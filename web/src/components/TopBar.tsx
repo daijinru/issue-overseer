@@ -17,6 +17,10 @@ export function TopBar({ issues, onCreated, onRefresh }: TopBarProps) {
     (i) => i.status === 'running' || i.status === 'planning',
   ).length;
 
+  const queuedCount = issues.filter(
+    (i) => i.status === 'open' || i.status === 'planned',
+  ).length;
+
   return (
     <div className="topbar">
       <div className="topbar-left">
@@ -30,6 +34,11 @@ export function TopBar({ issues, onCreated, onRefresh }: TopBarProps) {
           <Badge count={runningCount} showZero={false} size="small" offset={[-4, 4]}>
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
               Running: {runningCount}
+            </Typography.Text>
+          </Badge>
+          <Badge count={queuedCount} showZero={false} size="small" color="#722ed1" offset={[-4, 4]}>
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              Queued: {queuedCount}
             </Typography.Text>
           </Badge>
           <Button

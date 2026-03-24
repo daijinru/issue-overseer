@@ -628,11 +628,11 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 
 ### 验收标准
 
-- [ ] 所有列的操作按钮正确触发对应 API
-- [ ] Issue 编辑/删除按状态守卫正常工作
-- [ ] Running/Queued 计数准确
-- [ ] 卡片 hover 显示快捷操作
-- [ ] UI 美观、可滚动、多 Issue 时不溢出
+- [x] 所有列的操作按钮正确触发对应 API
+- [x] Issue 编辑/删除按状态守卫正常工作
+- [x] Running/Queued 计数准确
+- [x] 卡片 hover 显示快捷操作
+- [x] UI 美观、可滚动、多 Issue 时不溢出
 
 ---
 

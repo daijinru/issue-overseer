@@ -97,6 +97,7 @@ html, body, #root {
 /* ========== Issue Card ========== */
 
 .issue-card {
+  position: relative;
   background: #fff;
   border-radius: 6px;
   padding: 10px 12px;
@@ -123,6 +124,27 @@ html, body, #root {
   align-items: center;
   gap: 4px;
   margin-top: 4px;
+}
+
+/* Hover quick-action buttons overlay */
+.issue-card-actions {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.15s, transform 0.15s;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 4px;
+  padding: 2px 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  pointer-events: none;
+}
+
+.issue-card:hover .issue-card-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 /* Running card pulse animation */

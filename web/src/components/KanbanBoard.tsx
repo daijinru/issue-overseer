@@ -6,9 +6,10 @@ import type { Issue } from '../types';
 interface KanbanBoardProps {
   issues: Issue[];
   onCardClick: (issue: Issue) => void;
+  onActionDone: () => void;
 }
 
-export function KanbanBoard({ issues, onCardClick }: KanbanBoardProps) {
+export function KanbanBoard({ issues, onCardClick, onActionDone }: KanbanBoardProps) {
   const grouped = useMemo(() => groupIssuesByColumn(issues), [issues]);
 
   return (
@@ -19,6 +20,7 @@ export function KanbanBoard({ issues, onCardClick }: KanbanBoardProps) {
           column={col}
           issues={grouped[col.key] ?? []}
           onCardClick={onCardClick}
+          onActionDone={onActionDone}
         />
       ))}
     </div>

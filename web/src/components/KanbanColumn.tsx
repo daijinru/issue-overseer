@@ -7,9 +7,10 @@ interface KanbanColumnProps {
   column: KanbanColumnDef;
   issues: Issue[];
   onCardClick: (issue: Issue) => void;
+  onActionDone: () => void;
 }
 
-export function KanbanColumn({ column, issues, onCardClick }: KanbanColumnProps) {
+export function KanbanColumn({ column, issues, onCardClick, onActionDone }: KanbanColumnProps) {
   return (
     <div className="kanban-column">
       <div className="kanban-column-header" style={{ borderTopColor: column.color }}>
@@ -34,6 +35,7 @@ export function KanbanColumn({ column, issues, onCardClick }: KanbanColumnProps)
             key={issue.id}
             issue={issue}
             onClick={onCardClick}
+            onActionDone={onActionDone}
           />
         ))}
       </div>

@@ -1,11 +1,13 @@
 import { Typography, Tag } from 'antd';
 import { WarningOutlined, StopOutlined } from '@ant-design/icons';
 import { IssueStatusTag } from './StatusTag';
+import { ActionButtons } from './ActionButtons';
 import type { Issue, IssuePriority } from '../types';
 
 interface IssueCardProps {
   issue: Issue;
   onClick: (issue: Issue) => void;
+  onActionDone: () => void;
 }
 
 const priorityConfig: Record<IssuePriority, { color: string; label: string; borderColor: string }> = {
@@ -14,7 +16,7 @@ const priorityConfig: Record<IssuePriority, { color: string; label: string; bord
   low:    { color: 'default', label: 'LOW',    borderColor: '#d9d9d9' },
 };
 
-export function IssueCard({ issue, onClick }: IssueCardProps) {
+export function IssueCard({ issue, onClick, onActionDone }: IssueCardProps) {
   const priority = priorityConfig[issue.priority] ?? priorityConfig.medium;
   const isWaiting = issue.status === 'waiting_human';
   const isCancelled = issue.status === 'cancelled';
@@ -56,6 +58,19 @@ export function IssueCard({ issue, onClick }: IssueCardProps) {
           {priority.label}
         </Tag>
         <IssueStatusTag status={issue.status} />
+      </div>
+
+      {/* Hover quick-action buttons */}
+      <div
+        className="issue-card-actions"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <ActionButtons
+          issueId={issue.id}
+          status={issue.status}
+          onActionDone={onActionDone}
+          compact
+        />
       </div>
     </div>
   );

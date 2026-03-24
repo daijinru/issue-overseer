@@ -56,6 +56,7 @@ function App() {
           <KanbanBoard
             issues={issues}
             onCardClick={handleCardClick}
+            onActionDone={handleActionDone}
           />
         </Content>
       </Layout>
