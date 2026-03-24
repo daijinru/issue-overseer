@@ -106,8 +106,36 @@ class AgentRuntime:
         self._running_tasks.pop(issue_id, None)
 
     def _resolve_workspace(self, issue: Issue) -> str:
-        """Return the working directory for an issue, falling back to global config."""
-        return issue.workspace or self.settings.project.workspace
+        """Return the working directory for an issue, falling back to global config.
+
+        If the resolved path itself is a git repo, return it.
+        Otherwise walk upward; if still nothing, scan immediate children.
+        Returns the best candidate so git operations have the right cwd.
+        """
+        from pathlib import Path
+
+        raw = issue.workspace or self.settings.project.workspace
+        resolved = Path(raw).resolve()
+
+        # 1. Exact match — path itself is a git repo
+        if (resolved / ".git").exists():
+            return str(resolved)
+
+        # 2. Walk upward (user gave a subdirectory of the repo)
+        for parent in resolved.parents:
+            if (parent / ".git").exists():
+                return str(parent)
+
+        # 3. Scan immediate children (user gave the parent of the repo)
+        try:
+            for child in sorted(resolved.iterdir()):
+                if child.is_dir() and (child / ".git").exists():
+                    return str(child)
+        except OSError:
+            pass
+
+        # Nothing found — return original so the caller produces a clear error
+        return str(resolved)
 
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
         issue = await self.issue_repo.get(issue_id)
