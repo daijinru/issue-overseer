@@ -50,7 +50,9 @@ async def init_db() -> None:
     async with aiosqlite.connect(str(db_path)) as db:
         # Enable WAL mode for better concurrent read performance
         await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("PRAGMA foreign_keys=ON")
+        # Note: foreign_keys intentionally NOT enabled here —
+        # migrations may need to DROP/recreate tables with FK references.
+        # FK enforcement is enabled on the shared connection instead.
 
         # Create migration tracking table
         await db.execute(

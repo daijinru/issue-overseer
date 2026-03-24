@@ -2,7 +2,15 @@
 -- Migration 006: Kanban 状态扩展
 -- 核心问题：001_init.sql 的 CHECK 约束限制了 status 可选值，
 -- SQLite 不支持修改 CHECK，必须重建表。
+-- 注意：使用 IF NOT EXISTS / IF EXISTS 保证幂等性，
+--       因为 executescript() 自动提交，部分执行后重跑不会报错。
 -- ============================================================
+
+-- 关闭外键约束（DROP TABLE issues 时 executions 表有 FK 引用会报错）
+PRAGMA foreign_keys=OFF;
+
+-- 0. 清理上次可能残留的中间表
+DROP TABLE IF EXISTS issues_new;
 
 -- 1. 重建 issues 表（移除旧 CHECK 约束，状态校验改由应用层枚举负责）
 CREATE TABLE issues_new (
@@ -35,4 +43,7 @@ DROP TABLE issues;
 ALTER TABLE issues_new RENAME TO issues;
 
 -- 4. 重建索引
-CREATE INDEX idx_issues_status ON issues(status);
+CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status);
+
+-- 5. 恢复外键约束
+PRAGMA foreign_keys=ON;
