@@ -45,6 +45,7 @@ class Issue(BaseModel):
     branch_name: str | None = None
     human_instruction: str | None = None
     pr_url: str | None = None
+    failure_reason: str | None = None
     workspace: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -101,6 +102,7 @@ class IssueCreate(BaseModel):
 
 class IssueRetry(BaseModel):
     human_instruction: str | None = None
+    workspace: str | None = None
 
 
 # ── Runtime data structures ─────────────────────────────────────────

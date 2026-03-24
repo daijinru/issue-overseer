@@ -46,6 +46,13 @@ class AgentRuntime:
         if self._event_bus is not None:
             self._event_bus.publish(issue_id, event_type, data)
 
+    async def _fail_task(self, issue_id: str, reason: str) -> None:
+        """Mark issue as waiting_human with a specific, user-visible failure reason."""
+        logger.warning("Task %s failed: %s", issue_id, reason)
+        await self.issue_repo.update_fields(issue_id, failure_reason=reason)
+        await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
+        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False, "failure_reason": reason})
+
     async def recover_from_restart(self) -> None:
         """Recover issues stuck in 'running' after a service restart.
 
@@ -54,6 +61,7 @@ class AgentRuntime:
         stuck_issues = await self.issue_repo.list_all(status=IssueStatus.running)
         for issue in stuck_issues:
             logger.warning("Recovering stuck issue %s (%s)", issue.id, issue.title)
+            await self.issue_repo.update_fields(issue.id, failure_reason="服务重启，执行中断")
             await self.issue_repo.update_status(issue.id, IssueStatus.waiting_human)
             # Find the latest execution for this issue and log the interruption
             executions = await self.exec_repo.list_by_issue(issue.id)
@@ -107,7 +115,10 @@ class AgentRuntime:
         await self.issue_repo.update_status(issue_id, IssueStatus.running)
         branch_name = f"agent/{issue_id[:8]}"
         workspace = self._resolve_workspace(issue)
-        await self._git_create_branch(branch_name, cwd=workspace)
+        branch_ok = await self._git_create_branch(branch_name, cwd=workspace)
+        if not branch_ok:
+            await self._fail_task(issue_id, f"Git 分支创建失败：工作目录 {workspace} 可能不是有效的 git 仓库")
+            return
         await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
         self._emit(issue_id, "task_start", {"issue_id": issue_id, "branch_name": branch_name})
         max_turns = self.settings.agent.max_turns
@@ -140,7 +151,8 @@ class AgentRuntime:
                     last_result = turn_result.get("result")
                     last_error = turn_result.get("error")
         except TimeoutError:
-            logger.warning("Task %s timed out after %ds", issue_id, task_timeout)
+            await self._fail_task(issue_id, f"任务执行超时（{task_timeout}s）")
+            return
         except asyncio.CancelledError:
             await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
             self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
@@ -150,16 +162,12 @@ class AgentRuntime:
                 branch_name, f"agent: resolve issue {issue.title}", cwd=workspace,
             )
             if not committed:
-                logger.warning("Task %s: AI reported success but no file changes", issue_id)
-                await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
-                self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
+                await self._fail_task(issue_id, "AI 报告执行成功，但未产生文件变更")
             else:
                 self._emit(issue_id, "git_commit", {"branch_name": branch_name})
                 pushed = await self._git_push(branch_name, cwd=workspace)
                 if not pushed:
-                    logger.warning("Task %s: git push failed", issue_id)
-                    await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
-                    self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
+                    await self._fail_task(issue_id, f"Git push 到远程仓库失败（分支 {branch_name}）")
                 else:
                     self._emit(issue_id, "git_push", {"branch_name": branch_name})
                     pr_url = await self._create_pr(branch_name, issue, cwd=workspace)
@@ -171,8 +179,7 @@ class AgentRuntime:
                     await self.issue_repo.update_status(issue_id, IssueStatus.done)
                     self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
         else:
-            await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
-            self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False})
+            await self._fail_task(issue_id, "AI 执行未能解决问题，已用完所有重试轮次")
 
     async def _run_turn(self, *, issue, turn_number, max_turns,
                         cancel_event, last_result, last_error, execution_history) -> dict:
@@ -269,7 +276,8 @@ class AgentRuntime:
         except Exception:
             logger.warning("Failed to persist execution step", exc_info=True)
 
-    async def _git_create_branch(self, branch_name: str, *, cwd: str) -> None:
+    async def _git_create_branch(self, branch_name: str, *, cwd: str) -> bool:
+        """Create and checkout a branch. Returns True on success."""
         # Check if branch already exists
         check = await asyncio.create_subprocess_exec(
             "git", "rev-parse", "--verify", branch_name, cwd=cwd,
@@ -285,6 +293,7 @@ class AgentRuntime:
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
                 logger.warning("git checkout failed: %s", stderr.decode())
+                return False
         else:
             # Branch does not exist — create and checkout
             proc = await asyncio.create_subprocess_exec(
@@ -294,6 +303,8 @@ class AgentRuntime:
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
                 logger.warning("git checkout -b failed: %s", stderr.decode())
+                return False
+        return True
 
     async def _git_commit(self, branch_name: str, message: str, *, cwd: str) -> bool:
         """Stage changed files and commit. Returns True if a commit was made."""

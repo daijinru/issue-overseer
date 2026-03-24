@@ -26,6 +26,7 @@ export interface Issue {
   status: IssueStatus;
   branch_name: string | null;
   human_instruction: string | null;
+  failure_reason: string | null;
   workspace: string | null;
   created_at: string;
   updated_at: string;
@@ -77,6 +78,7 @@ export interface IssueCreateRequest {
 
 export interface IssueRetryRequest {
   human_instruction?: string;
+  workspace?: string;
 }
 
 // SSE event types — mirrors backend EventBus event_type values

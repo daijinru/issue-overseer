@@ -136,9 +136,14 @@ export function IssueDetail({
           type="warning"
           message="AI 执行失败，等待指令"
           description={
-            issue.human_instruction
-              ? `上次指令: ${issue.human_instruction}`
-              : undefined
+            <>
+              {issue.failure_reason && <div>{issue.failure_reason}</div>}
+              {issue.human_instruction && (
+                <div style={{ marginTop: issue.failure_reason ? 8 : 0 }}>
+                  上次指令: {issue.human_instruction}
+                </div>
+              )}
+            </>
           }
           style={{ marginBottom: 16 }}
           showIcon
@@ -147,6 +152,8 @@ export function IssueDetail({
       <RetryInput
         issueId={issue.id}
         status={issue.status}
+        failureReason={issue.failure_reason}
+        currentWorkspace={issue.workspace}
         onRetryDone={onActionDone}
       />
 

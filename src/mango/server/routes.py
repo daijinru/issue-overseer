@@ -86,7 +86,7 @@ async def retry_issue(issue_id: str, body: IssueRetry, request: Request):
         raise HTTPException(status_code=404, detail="Issue not found")
     if issue.status not in (IssueStatus.failed, IssueStatus.waiting_human):
         raise HTTPException(status_code=409, detail=f"Issue is {issue.status.value}, must be 'failed' or 'waiting_human' to retry")
-    await repo.retry_reset(issue_id, body.human_instruction)
+    await repo.retry_reset(issue_id, body.human_instruction, workspace=body.workspace)
     await runtime.start_task(issue_id)
     return {"message": "Retry started", "issue_id": issue_id}
 
