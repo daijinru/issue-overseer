@@ -200,16 +200,50 @@ function getColumnForIssue(issue: Issue): string {
 
 ### DB Migration: `006_kanban_statuses.sql`
 
-```sql
--- 迁移 failed → waiting_human
-UPDATE issues SET status = 'waiting_human' WHERE status = 'failed';
+> **重要**：`001_init.sql` 中 `issues` 表有 `CHECK(status IN ('open','running','done','failed','waiting_human','cancelled'))` 约束。SQLite 不支持 `ALTER TABLE ... DROP CONSTRAINT`，必须通过**重建表**移除旧 CHECK，否则写入 `planning`/`planned`/`review` 会被 SQLite 直接拒绝。
 
--- 新增字段
-ALTER TABLE issues ADD COLUMN priority TEXT DEFAULT 'medium';
-ALTER TABLE issues ADD COLUMN spec TEXT;
+```sql
+-- ============================================================
+-- Migration 006: Kanban 状态扩展
+-- 核心问题：001_init.sql 的 CHECK 约束限制了 status 可选值，
+-- SQLite 不支持修改 CHECK，必须重建表。
+-- ============================================================
+
+-- 1. 重建 issues 表（移除旧 CHECK 约束，状态校验改由应用层枚举负责）
+CREATE TABLE issues_new (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  branch_name TEXT,
+  human_instruction TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  workspace TEXT,
+  pr_url TEXT,
+  failure_reason TEXT,
+  priority TEXT DEFAULT 'medium',
+  spec TEXT
+);
+
+-- 2. 迁移数据，同时将 failed → waiting_human
+INSERT INTO issues_new (id, title, description, status, branch_name, human_instruction,
+                        created_at, updated_at, workspace, pr_url, failure_reason)
+SELECT id, title, description,
+       CASE WHEN status = 'failed' THEN 'waiting_human' ELSE status END,
+       branch_name, human_instruction,
+       created_at, updated_at, workspace, pr_url, failure_reason
+FROM issues;
+
+-- 3. 替换旧表
+DROP TABLE issues;
+ALTER TABLE issues_new RENAME TO issues;
+
+-- 4. 重建索引
+CREATE INDEX idx_issues_status ON issues(status);
 ```
 
-> SQLite 不支持修改 CHECK 约束。新状态值（planning, planned, review）由应用层 Python 枚举校验。所有状态更新走 `IssueRepo.update_status()`，不直接写 SQL。
+> **为什么移除 CHECK 而非替换为新 CHECK**：状态枚举会随版本演进，将校验责任移到应用层 Python `IssueStatus` 枚举，避免每次加状态都要重建表。所有状态更新走 `IssueRepo.update_status()`，不直接写 SQL。
 
 ### 模型变更: `models.py`
 
@@ -304,6 +338,67 @@ class PlanSkill(BaseSkill):
 """
 ```
 
+### JSON 提取鲁棒处理
+
+LLM 输出格式不确定，常见问题：markdown 代码块包裹、多余解释文本、字段名大小写不一致。需要鲁棒的 JSON 提取策略：
+
+```python
+import re
+import json
+
+def extract_spec_json(raw_output: str) -> dict | None:
+    """从 LLM 输出中鲁棒提取 Spec JSON。
+
+    处理策略（按优先级）：
+    1. 尝试直接 json.loads（理想情况）
+    2. 提取 ```json ... ``` 代码块内容
+    3. 正则匹配第一个 { ... } 块（贪婪，处理嵌套）
+    4. 全部失败 → 返回 None
+    """
+    # 策略 1：直接解析
+    try:
+        return json.loads(raw_output.strip())
+    except json.JSONDecodeError:
+        pass
+
+    # 策略 2：提取 markdown 代码块
+    code_block = re.search(r'```(?:json)?\s*\n(.*?)\n```', raw_output, re.DOTALL)
+    if code_block:
+        try:
+            return json.loads(code_block.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 策略 3：匹配最外层 { ... }（处理嵌套大括号）
+    brace_match = re.search(r'\{', raw_output)
+    if brace_match:
+        start = brace_match.start()
+        depth = 0
+        for i in range(start, len(raw_output)):
+            if raw_output[i] == '{': depth += 1
+            elif raw_output[i] == '}': depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw_output[start:i+1])
+                except json.JSONDecodeError:
+                    break
+
+    return None
+
+
+def validate_spec(data: dict) -> dict:
+    """校验并规范化 Spec 字段，宽松接受。"""
+    return {
+        "plan": data.get("plan", data.get("Plan", "")),
+        "acceptance_criteria": data.get("acceptance_criteria",
+                                        data.get("acceptanceCriteria", [])),
+        "files_to_modify": data.get("files_to_modify",
+                                    data.get("filesToModify", [])),
+        "estimated_complexity": data.get("estimated_complexity",
+                                         data.get("complexity", "medium")),
+    }
+```
+
 ### Runtime: Plan 流程
 
 新增 `start_plan()` 方法：
@@ -314,9 +409,13 @@ async def start_plan(self, issue_id: str) -> None:
     # 1. 校验状态必须是 open
     # 2. 状态转为 planning
     # 3. 单轮调用 PlanSkill（不创建 git 分支）
-    # 4. 解析 JSON → 存入 issues.spec
-    # 5. 成功 → planned；失败 → waiting_human
+    # 4. extract_spec_json() 提取 JSON
+    # 5. validate_spec() 规范化字段
+    # 6. 成功 → planned；JSON 提取失败 → 重试 1 次（重新措辞 prompt 强调 JSON-only 输出）
+    # 7. 重试仍失败 → waiting_human（failure_reason 记录原始输出供人类排查）
 ```
+
+> **重试策略**：第一次失败后，用更严格的 prompt 重试 1 次（追加 "IMPORTANT: Output ONLY valid JSON, no markdown, no explanation."）。超过 1 次重试 → waiting_human，避免无限循环浪费 token。
 
 ### GenericSkill 改造
 
@@ -340,7 +439,7 @@ POST /api/issues/{id}/reject-spec   拒绝 Spec（planned → open）
 
 | 文件 | 变更类型 |
 |------|---------|
-| `src/mango/skills/plan.py` | **新增** |
+| `src/mango/skills/plan.py` | **新增**（含 `extract_spec_json` + `validate_spec`） |
 | `src/mango/agent/runtime.py` | 修改 |
 | `src/mango/agent/context.py` | 修改 |
 | `src/mango/server/routes.py` | 修改 |
@@ -349,6 +448,9 @@ POST /api/issues/{id}/reject-spec   拒绝 Spec（planned → open）
 
 - [ ] `POST /plan` 触发 Spec 生成，状态 `open` → `planning` → `planned`
 - [ ] Issue 的 `spec` 字段包含有效 JSON（plan + acceptance_criteria + files）
+- [ ] `extract_spec_json()` 能处理：裸 JSON、markdown 代码块包裹、前后有解释文本 三种情况
+- [ ] JSON 提取失败时自动重试 1 次（stricter prompt），仍失败 → `waiting_human`
+- [ ] `validate_spec()` 宽松接受字段名大小写差异（snake_case / camelCase）
 - [ ] `PUT /spec` 允许用户编辑 Spec
 - [ ] `POST /reject-spec` 将 Issue 退回 `open`
 - [ ] `POST /run` 在 `planned` Issue 上执行时，prompt 包含 Spec 内容
@@ -359,7 +461,7 @@ POST /api/issues/{id}/reject-spec   拒绝 Spec（planned → open）
 
 ## 第三步：Kanban Board UI（前端）
 
-> 用五列看板替换列表布局，卡片点击弹出 Card Detail 大弹窗。
+> 拆分为两个子步骤。3a 搭看板骨架 + 卡片（直接替换旧列表），3b 加 Card Detail Modal。
 
 ### 布局架构
 
@@ -398,18 +500,6 @@ POST /api/issues/{id}/reject-spec   拒绝 Spec（planned → open）
 - **右侧**：实时 Session 步骤流 + 执行历史 + 日志，通过 Tabs 切换（~65% 宽度）
 - **优先级排序**：列内按 high → medium → low → 更新时间排序
 
-### 新增前端文件
-
-| 文件 | 说明 |
-|------|------|
-| `web/src/components/KanbanBoard.tsx` | 主看板容器：接收 issues，按 status 分组到 5 列渲染 |
-| `web/src/components/KanbanColumn.tsx` | 单列：标题 + Agent 角色标签 + Issue 数量 + 卡片列表（可滚动） |
-| `web/src/components/IssueCard.tsx` | 卡片：标题（截断）、优先级徽章（🔴🟡⚪）、状态 Tag、描述摘要、分支/PR 链接 |
-| `web/src/components/CardDetailModal.tsx` | 大弹窗：左右分栏，左侧元数据+操作+Spec，右侧实时步骤/历史/日志 Tabs |
-| `web/src/components/SpecCard.tsx` | Spec 展示/编辑：计划描述、验收标准清单、待修改文件列表、[确认执行]/[重新生成]/[拒绝] 按钮 |
-| `web/src/components/TopBar.tsx` | 顶栏：Mango Logo + [新建 Issue] 按钮 + Running Badge + Queued Badge + 刷新按钮 |
-| `web/src/utils/kanban.ts` | 列定义常量 + `getColumnForIssue()` 映射函数 |
-
 ### Kanban 列定义常量: `kanban.ts`
 
 ```typescript
@@ -422,11 +512,27 @@ export const KANBAN_COLUMNS = [
 ];
 ```
 
-### 修改前端文件
+---
+
+### 第 3a 步：Kanban 骨架 + 卡片
+
+> 搭建五列看板骨架和卡片组件，直接替换旧 `<Sider>` 列表布局。卡片点击暂复用现有 `IssueDetail` 组件，3b 步再替换为 Modal。
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `web/src/components/KanbanBoard.tsx` | 主看板容器：接收 issues，按 status 分组到 5 列渲染 |
+| `web/src/components/KanbanColumn.tsx` | 单列：标题 + Agent 角色标签 + Issue 数量 + 卡片列表（可滚动） |
+| `web/src/components/IssueCard.tsx` | 卡片：标题（截断）、优先级徽章、状态 Tag、描述摘要 |
+| `web/src/components/TopBar.tsx` | 顶栏：Mango Logo + [新建 Issue] 按钮 + Running Badge + Queued Badge |
+| `web/src/utils/kanban.ts` | 列定义常量 + `getColumnForIssue()` 映射函数 |
+
+#### 修改文件
 
 | 文件 | 改动 |
 |------|------|
-| `web/src/App.tsx` | 移除 `<Sider>` 布局 → `<TopBar>` + `<KanbanBoard>` + `<CardDetailModal>` |
+| `web/src/App.tsx` | 移除 `<Sider>` 布局 → `<TopBar>` + `<KanbanBoard>`，卡片点击暂打开 `IssueDetail` |
 | `web/src/types/index.ts` | 新增 `planning`/`planned`/`review` 状态；新增 `IssuePriority`；Issue 加 `priority`/`spec` |
 | `web/src/utils/status.ts` | 加 `planning`/`planned`/`review` 颜色标签；删 `failed` |
 | `web/src/api/client.ts` | 新增 `planIssue`、`updateSpec`、`rejectSpec`、`completeIssue`、`editIssue`、`deleteIssue` |
@@ -434,16 +540,41 @@ export const KANBAN_COLUMNS = [
 | `web/src/components/IssueForm.tsx` | 新增优先级选择器（`<Select>` high/medium/low） |
 | `web/src/components/StatusTag.tsx` | 新增 `planning`/`planned`/`review` 的颜色定义 |
 
-### 验收标准
+#### 验收标准
 
 - [ ] 五列看板正确渲染，每列显示标题 + Agent 角色 + Issue 数量
 - [ ] Issue 按状态归入对应列
 - [ ] `waiting_human` Issue 在失败时所在列显示，带 ⚠ 徽章
 - [ ] 卡片显示标题、优先级、状态 Tag
+- [ ] 列内卡片按优先级排序
+- [ ] 卡片点击打开 `IssueDetail`（复用现有组件，3b 步再替换为 Modal）
+
+---
+
+### 第 3b 步：Card Detail Modal + SpecCard
+
+> 在 3a 骨架基础上，为卡片点击增加全屏 Card Detail Modal（左右分栏），替代旧 IssueDetail 面板。
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `web/src/components/CardDetailModal.tsx` | 大弹窗：左右分栏，左侧元数据+操作+Spec，右侧实时步骤/历史/日志 Tabs |
+| `web/src/components/SpecCard.tsx` | Spec 展示/编辑：计划描述、验收标准清单、待修改文件列表、[确认执行]/[重新生成]/[拒绝] 按钮 |
+
+#### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `web/src/App.tsx` | Kanban 分支中：卡片点击从打开 IssueDetail → 打开 CardDetailModal |
+| `web/src/components/KanbanBoard.tsx` | 增加 `selectedIssue` 状态 + Modal 挂载 |
+
+#### 验收标准
+
 - [ ] 卡片点击弹出 Card Detail Modal，左侧元数据、右侧实时步骤
 - [ ] Modal 中 SpecCard 展示 Spec 内容（当 Issue 有 spec 时）
 - [ ] SSE 实时更新在 Modal 右侧面板仍正常工作
-- [ ] 列内卡片按优先级排序
+- [ ] Modal 关闭后回到看板，状态保持一致
 
 ---
 
@@ -535,13 +666,13 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 |---|------|---------|
 | 1 | `src/mango/db/migrations/006_kanban_statuses.sql` | 第一步 |
 | 2 | `src/mango/skills/plan.py` | 第二步 |
-| 3 | `web/src/components/KanbanBoard.tsx` | 第三步 |
-| 4 | `web/src/components/KanbanColumn.tsx` | 第三步 |
-| 5 | `web/src/components/IssueCard.tsx` | 第三步 |
-| 6 | `web/src/components/CardDetailModal.tsx` | 第三步 |
-| 7 | `web/src/components/SpecCard.tsx` | 第三步 |
-| 8 | `web/src/components/TopBar.tsx` | 第三步 |
-| 9 | `web/src/utils/kanban.ts` | 第三步 |
+| 3 | `web/src/components/KanbanBoard.tsx` | 第 3a 步 |
+| 4 | `web/src/components/KanbanColumn.tsx` | 第 3a 步 |
+| 5 | `web/src/components/IssueCard.tsx` | 第 3a 步 |
+| 6 | `web/src/components/TopBar.tsx` | 第 3a 步 |
+| 7 | `web/src/utils/kanban.ts` | 第 3a 步 |
+| 8 | `web/src/components/CardDetailModal.tsx` | 第 3b 步 |
+| 9 | `web/src/components/SpecCard.tsx` | 第 3b 步 |
 | 10 | `tests/test_plan_skill.py` | 第五步 |
 
 ### 修改文件（17 个）
@@ -553,15 +684,15 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 | 3 | `src/mango/agent/runtime.py` | 第一步、第二步 |
 | 4 | `src/mango/agent/context.py` | 第二步 |
 | 5 | `src/mango/server/routes.py` | 第一步、第二步 |
-| 6 | `web/src/App.tsx` | 第三步 |
-| 7 | `web/src/App.css` | 第三步、第四步 |
-| 8 | `web/src/types/index.ts` | 第三步 |
-| 9 | `web/src/utils/status.ts` | 第三步 |
-| 10 | `web/src/api/client.ts` | 第三步 |
-| 11 | `web/src/hooks/useIssues.ts` | 第三步 |
-| 12 | `web/src/components/IssueForm.tsx` | 第三步 |
+| 6 | `web/src/App.tsx` | 第 3a 步、第 3b 步 |
+| 7 | `web/src/App.css` | 第 3a 步、第四步 |
+| 8 | `web/src/types/index.ts` | 第 3a 步 |
+| 9 | `web/src/utils/status.ts` | 第 3a 步 |
+| 10 | `web/src/api/client.ts` | 第 3a 步 |
+| 11 | `web/src/hooks/useIssues.ts` | 第 3a 步 |
+| 12 | `web/src/components/IssueForm.tsx` | 第 3a 步 |
 | 13 | `web/src/components/ActionButtons.tsx` | 第四步 |
-| 14 | `web/src/components/StatusTag.tsx` | 第三步 |
+| 14 | `web/src/components/StatusTag.tsx` | 第 3a 步 |
 | 15 | `tests/test_api.py` | 第五步 |
 | 16 | `tests/test_runtime.py` | 第五步 |
 | 17 | `tests/test_db.py` | 第五步 |
@@ -570,7 +701,7 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 
 | # | 文件 | 说明 |
 |---|------|------|
-| 1 | `web/src/components/IssueList.tsx` | 被 KanbanBoard 替代，保留在代码树中 |
+| 1 | `web/src/components/IssueList.tsx` | 被 KanbanBoard 替代（第 3a 步） |
 
 ---
 
@@ -578,12 +709,13 @@ const actions: Record<IssueStatus, ActionDef[]> = {
 
 | 阶段 | 范围 | 工期 |
 |------|------|------|
-| 第一步 | 状态机 + DB + 后端路由 | ~2 天 |
-| 第二步 | PlanSkill + Spec 流程 | ~2 天 |
-| 第三步 | Kanban Board UI | ~3 天 |
+| 第一步 | 状态机 + DB（含表重建） + 后端路由 | ~2.5 天 |
+| 第二步 | PlanSkill + JSON 鲁棒提取 + Spec 流程 | ~3 天 |
+| 第 3a 步 | Kanban 骨架 + 卡片 | ~2 天 |
+| 第 3b 步 | Card Detail Modal + SpecCard | ~2 天 |
 | 第四步 | 交互 + 打磨 | ~2 天 |
-| 第五步 | 测试 + 集成验证 | ~1 天 |
-| **总计** | | **~10 天** |
+| 第五步 | 测试 + 集成验证 | ~1.5 天 |
+| **总计** | | **~13 天** |
 
 ---
 
