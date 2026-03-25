@@ -111,7 +111,8 @@ export type SSEEventType =
   | 'task_cancelled'
   | 'plan_start'
   | 'plan_end'
-  | 'opencode_step';
+  | 'opencode_step'
+  | 'execution_log';
 
 export interface SSEEvent {
   type: SSEEventType;

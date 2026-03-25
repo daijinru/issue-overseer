@@ -49,6 +49,17 @@ class AgentRuntime:
         if self._event_bus is not None:
             self._event_bus.publish(issue_id, event_type, data)
 
+    async def _log(
+        self, issue_id: str, execution_id: str, level: LogLevel, message: str,
+    ) -> None:
+        """Write a log to DB and push it to the frontend via SSE in one call."""
+        await self.log_repo.append(execution_id, level, message)
+        self._emit(issue_id, "execution_log", {
+            "execution_id": execution_id,
+            "level": level.value,
+            "message": message,
+        })
+
     async def _fail_task(self, issue_id: str, reason: str) -> None:
         """Mark issue as waiting_human with a specific, user-visible failure reason."""
         logger.warning("Task %s failed: %s", issue_id, reason)
@@ -78,8 +89,8 @@ class AgentRuntime:
                             status=ExecutionStatus.failed,
                             error_message="服务重启，执行中断",
                         )
-                    await self.log_repo.append(
-                        latest_exec.id, LogLevel.warn, "服务重启，执行中断"
+                    await self._log(
+                        issue.id, latest_exec.id, LogLevel.warn, "服务重启，执行中断"
                     )
                 logger.info("Issue %s recovered to waiting_human", issue.id)
 
@@ -124,6 +135,18 @@ class AgentRuntime:
         self._emit(issue_id, "plan_start", {"issue_id": issue_id})
         workspace = self._resolve_workspace(issue)
 
+        # Create a lifecycle execution record (turn=0) for plan-level logs
+        plan_lifecycle_id = str(uuid.uuid4())
+        await self.exec_repo.create(
+            execution_id=plan_lifecycle_id, issue_id=issue_id,
+            turn_number=0, attempt_number=0,
+            prompt=None, context_snapshot=None, git_diff_snapshot=None,
+        )
+        await self._log(
+            issue_id, plan_lifecycle_id, LogLevel.info,
+            f"开始生成 Spec，工作目录: {workspace}",
+        )
+
         ctx = build_turn_context(
             issue=issue, turn_number=1, max_turns=1,
             human_instruction=issue.human_instruction,
@@ -136,6 +159,9 @@ class AgentRuntime:
         try:
             for attempt in range(max_attempts):
                 if cancel_event.is_set():
+                    await self._log(issue_id, plan_lifecycle_id, LogLevel.warn, "Spec 生成已取消")
+                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.cancelled,
+                                                error_message="Spec 生成已取消")
                     await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
                     self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
                     return
@@ -146,6 +172,10 @@ class AgentRuntime:
                 else:
                     prompt = self.plan_skill.build_strict_prompt(ctx)
                     logger.info("Plan %s: retrying with strict prompt (attempt %d)", issue_id, attempt + 1)
+                    await self._log(
+                        issue_id, plan_lifecycle_id, LogLevel.warn,
+                        f"Spec JSON 解析失败，使用严格模式重试（第 {attempt + 1}/{max_attempts} 次）",
+                    )
 
                 # Create execution record
                 execution_id = str(uuid.uuid4())
@@ -175,12 +205,18 @@ class AgentRuntime:
                         execution_id, status=ExecutionStatus.timeout,
                         error_message=f"Plan generation timed out after {plan_timeout}s",
                     )
+                    await self._log(
+                        issue_id, plan_lifecycle_id, LogLevel.error,
+                        f"Spec 生成超时（{plan_timeout}s，第 {attempt + 1}/{max_attempts} 次）",
+                    )
                     logger.warning(
                         "Plan %s: timed out after %ds (attempt %d/%d)",
                         issue_id, plan_timeout, attempt + 1, max_attempts,
                     )
                     # Allow retry on timeout — only fail after all attempts
                     if attempt + 1 >= max_attempts:
+                        await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
+                                                    error_message="Spec 生成超时")
                         await self._fail_plan(
                             issue_id,
                             f"Spec 生成超时（{plan_timeout}s，已重试 {max_attempts} 次）",
@@ -192,6 +228,9 @@ class AgentRuntime:
                         execution_id, status=ExecutionStatus.cancelled,
                         error_message="Cancelled by user",
                     )
+                    await self._log(issue_id, plan_lifecycle_id, LogLevel.warn, "Spec 生成已取消")
+                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.cancelled,
+                                                error_message="Spec 生成已取消")
                     await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
                     self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
                     return
@@ -200,6 +239,11 @@ class AgentRuntime:
                         execution_id, status=ExecutionStatus.failed,
                         error_message=f"{type(e).__name__}: {e}",
                     )
+                    await self._log(
+                        issue_id, plan_lifecycle_id, LogLevel.error, f"Spec 生成异常: {e}",
+                    )
+                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
+                                                error_message=f"Spec 生成异常: {e}")
                     await self._fail_plan(issue_id, f"Spec 生成异常: {e}")
                     return
 
@@ -210,6 +254,8 @@ class AgentRuntime:
                     spec_json = json.dumps(validated, ensure_ascii=False)
                     await self.issue_repo.update_fields(issue_id, spec=spec_json)
                     await self.issue_repo.update_status(issue_id, IssueStatus.planned)
+                    await self._log(issue_id, plan_lifecycle_id, LogLevel.info, "Spec 生成完成")
+                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.completed)
                     self._emit(issue_id, "plan_end", {
                         "issue_id": issue_id, "success": True, "spec": validated,
                     })
@@ -223,12 +269,23 @@ class AgentRuntime:
 
             # All attempts exhausted — transition to waiting_human
             truncated_output = (raw_output or "")[:2000]
+            await self._log(
+                issue_id, plan_lifecycle_id, LogLevel.error,
+                f"Spec JSON 解析失败（已重试 {max_attempts} 次）",
+            )
+            await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
+                                        error_message="Spec JSON 解析失败")
             await self._fail_plan(
                 issue_id,
                 f"Spec JSON 解析失败（已重试 {max_attempts} 次）。原始输出：\n{truncated_output}",
             )
         except Exception as e:
             logger.exception("Unexpected error in plan flow for %s", issue_id)
+            await self._log(
+                issue_id, plan_lifecycle_id, LogLevel.error, f"计划生成未预期错误: {e}",
+            )
+            await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
+                                        error_message=f"计划生成未预期错误: {e}")
             await self._fail_plan(issue_id, f"计划生成未预期错误: {e}")
 
     async def _fail_plan(self, issue_id: str, reason: str) -> None:
@@ -306,14 +363,37 @@ class AgentRuntime:
         await self.issue_repo.update_status(issue_id, IssueStatus.running)
         branch_name = f"agent/{issue_id[:8]}"
         workspace = self._resolve_workspace(issue)
+
+        # Create a lifecycle execution record (turn=0) for task-level logs
+        lifecycle_id = str(uuid.uuid4())
+        await self.exec_repo.create(
+            execution_id=lifecycle_id, issue_id=issue_id,
+            turn_number=0, attempt_number=0,
+            prompt=None, context_snapshot=None, git_diff_snapshot=None,
+        )
+
         branch_ok = await self._git_create_branch(branch_name, cwd=workspace)
         if not branch_ok:
+            await self._log(
+                issue_id, lifecycle_id, LogLevel.error,
+                f"Git 分支创建失败：工作目录 {workspace} 可能不是有效的 git 仓库",
+            )
+            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
+                                        error_message="Git 分支创建失败")
             await self._fail_task(issue_id, f"Git 分支创建失败：工作目录 {workspace} 可能不是有效的 git 仓库")
             return
         await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
         self._emit(issue_id, "task_start", {"issue_id": issue_id, "branch_name": branch_name})
         max_turns = self.settings.agent.max_turns
         task_timeout = self.settings.agent.task_timeout
+        await self._log(
+            issue_id, lifecycle_id, LogLevel.info,
+            f"任务开始，分支: {branch_name}，工作目录: {workspace}",
+        )
+        await self._log(
+            issue_id, lifecycle_id, LogLevel.info,
+            f"开始执行，最大轮次: {max_turns}，任务超时: {task_timeout}s",
+        )
         last_result: str | None = None
         last_error: str | None = None
         execution_history: list[dict] = []
@@ -322,6 +402,9 @@ class AgentRuntime:
             async with asyncio.timeout(task_timeout):
                 for turn in range(1, max_turns + 1):
                     if cancel_event.is_set():
+                        await self._log(issue_id, lifecycle_id, LogLevel.warn, "任务已取消")
+                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.cancelled,
+                                                    error_message="任务已取消")
                         await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
                         self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
                         return
@@ -342,9 +425,17 @@ class AgentRuntime:
                     last_result = turn_result.get("result")
                     last_error = turn_result.get("error")
         except TimeoutError:
+            await self._log(
+                issue_id, lifecycle_id, LogLevel.error, f"任务执行超时（{task_timeout}s）",
+            )
+            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.timeout,
+                                        error_message=f"任务执行超时（{task_timeout}s）")
             await self._fail_task(issue_id, f"任务执行超时（{task_timeout}s）")
             return
         except asyncio.CancelledError:
+            await self._log(issue_id, lifecycle_id, LogLevel.warn, "任务已取消")
+            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.cancelled,
+                                        error_message="任务已取消")
             await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
             self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
             return
@@ -353,25 +444,57 @@ class AgentRuntime:
                 branch_name, f"agent: resolve issue {issue.title}", cwd=workspace,
             )
             if not committed:
+                await self._log(
+                    issue_id, lifecycle_id, LogLevel.warn, "AI 报告执行成功，但未产生文件变更",
+                )
+                await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
+                                            error_message="AI 报告执行成功，但未产生文件变更")
                 await self._fail_task(issue_id, "AI 报告执行成功，但未产生文件变更")
             else:
+                await self._log(
+                    issue_id, lifecycle_id, LogLevel.info, f"Git commit 完成，分支: {branch_name}",
+                )
                 self._emit(issue_id, "git_commit", {"branch_name": branch_name})
                 pushed = await self._git_push(branch_name, cwd=workspace)
                 if not pushed:
+                    await self._log(
+                        issue_id, lifecycle_id, LogLevel.error,
+                        f"Git push 到远程仓库失败（分支 {branch_name}）",
+                    )
+                    await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
+                                                error_message="Git push 失败")
                     await self._fail_task(issue_id, f"Git push 到远程仓库失败（分支 {branch_name}）")
                 else:
+                    await self._log(
+                        issue_id, lifecycle_id, LogLevel.info, f"Git push 完成，分支: {branch_name}",
+                    )
                     self._emit(issue_id, "git_push", {"branch_name": branch_name})
                     pr_url = await self._create_pr(branch_name, issue, cwd=workspace)
                     if pr_url:
+                        await self._log(
+                            issue_id, lifecycle_id, LogLevel.info, f"PR 已创建: {pr_url}",
+                        )
                         await self.issue_repo.update_fields(issue_id, pr_url=pr_url)
                         self._emit(issue_id, "pr_created", {"pr_url": pr_url})
                         await self.issue_repo.update_status(issue_id, IssueStatus.review)
+                        await self._log(issue_id, lifecycle_id, LogLevel.info, "任务完成")
+                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.completed)
                         self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
                     else:
+                        await self._log(
+                            issue_id, lifecycle_id, LogLevel.warn, "PR 创建失败（代码已推送至远程）",
+                        )
                         logger.warning("Task %s: PR creation failed (code is pushed)", issue_id)
                         await self.issue_repo.update_status(issue_id, IssueStatus.done)
+                        await self._log(issue_id, lifecycle_id, LogLevel.info, "任务完成（无 PR）")
+                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.completed)
                         self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": None})
         else:
+            await self._log(
+                issue_id, lifecycle_id, LogLevel.error, "AI 执行未能解决问题，已用完所有重试轮次",
+            )
+            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
+                                        error_message="已用完所有重试轮次")
             await self._fail_task(issue_id, "AI 执行未能解决问题，已用完所有重试轮次")
 
     async def _run_turn(self, *, issue, turn_number, max_turns,
@@ -395,9 +518,16 @@ class AgentRuntime:
             prompt=self.skill._build_prompt(ctx),
             context_snapshot=_context_to_dict(ctx), git_diff_snapshot=git_diff,
         )
+        await self._log(
+            issue.id, execution_id, LogLevel.info, f"开始第 {turn_number}/{max_turns} 轮",
+        )
         result = await self._run_attempt(
             execution_id=execution_id, ctx=ctx,
             cancel_event=cancel_event, cwd=workspace,
+        )
+        turn_status = "成功" if result.get("success", False) else "失败"
+        await self._log(
+            issue.id, execution_id, LogLevel.info, f"第 {turn_number}/{max_turns} 轮完成（{turn_status}）",
         )
         self._emit(issue.id, "turn_end", {"turn_number": turn_number, "success": result.get("success", False)})
         return result
@@ -420,10 +550,10 @@ class AgentRuntime:
                     on_event=on_opencode_event,
                 )
             duration_ms = int((time.monotonic() - start) * 1000)
-            await self._audit_commands(execution_id, result_text)
+            await self._audit_commands(issue_id, execution_id, result_text)
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.completed,
                                         result=result_text, duration_ms=duration_ms)
-            await self.log_repo.append(execution_id, LogLevel.info, f"Turn completed in {duration_ms}ms")
+            await self._log(issue_id, execution_id, LogLevel.info, f"Turn completed in {duration_ms}ms")
             self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "completed", "duration_ms": duration_ms})
             return {"success": True, "result": result_text, "error": None}
         except TimeoutError:
@@ -431,13 +561,14 @@ class AgentRuntime:
             error_msg = f"Attempt timed out after {attempt_timeout}s"
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.timeout,
                                         error_message=error_msg, duration_ms=duration_ms)
-            await self.log_repo.append(execution_id, LogLevel.error, error_msg)
+            await self._log(issue_id, execution_id, LogLevel.error, error_msg)
             self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "timeout", "duration_ms": duration_ms})
             return {"success": False, "result": None, "error": error_msg}
         except asyncio.CancelledError:
             duration_ms = int((time.monotonic() - start) * 1000)
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.cancelled,
                                         error_message="Cancelled by user", duration_ms=duration_ms)
+            await self._log(issue_id, execution_id, LogLevel.warn, "执行已取消")
             self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "cancelled", "duration_ms": duration_ms})
             raise
         except Exception as e:
@@ -445,18 +576,18 @@ class AgentRuntime:
             error_msg = f"{type(e).__name__}: {e}"
             await self.exec_repo.finish(execution_id, status=ExecutionStatus.failed,
                                         error_message=error_msg, duration_ms=duration_ms)
-            await self.log_repo.append(execution_id, LogLevel.error, error_msg)
+            await self._log(issue_id, execution_id, LogLevel.error, error_msg)
             self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "failed", "duration_ms": duration_ms})
             return {"success": False, "result": None, "error": error_msg}
 
-    async def _audit_commands(self, execution_id: str, result_text: str) -> None:
+    async def _audit_commands(self, issue_id: str, execution_id: str, result_text: str) -> None:
         commands = extract_commands_from_result(result_text)
         security_cfg = self.settings.security
         for cmd in commands:
             is_allowed = validate_command(cmd, security_cfg)
             level = LogLevel.info if is_allowed else LogLevel.warn
             prefix = "CMD" if is_allowed else "⚠ BLOCKED CMD"
-            await self.log_repo.append(execution_id, level, f"{prefix}: {cmd}")
+            await self._log(issue_id, execution_id, level, f"{prefix}: {cmd}")
 
     async def _persist_step(self, execution_id: str, event: dict) -> None:
         """Persist an OpenCode step event to the database (fire-and-forget)."""

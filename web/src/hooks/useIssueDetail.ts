@@ -18,7 +18,7 @@ const REFRESH_EVENTS: SSEEventType[] = [
 ];
 
 /** All SSE event types we listen to — refresh events + streaming events. */
-const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'opencode_step'];
+const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'opencode_step', 'execution_log'];
 
 /**
  * Convert persisted ExecutionStep[] to the OpenCodeStep[] format used by the UI.
@@ -137,6 +137,29 @@ export function useIssueDetail(issueId: string | null) {
           try {
             const stepData = JSON.parse((evt as MessageEvent).data) as OpenCodeStep;
             setSteps((prev) => [...prev, stepData]);
+          } catch {
+            // Ignore parse errors
+          }
+          return;
+        }
+
+        if (eventType === 'execution_log') {
+          // Append new log entry from SSE for real-time visibility.
+          // Uses a negative auto-decrement id to avoid collisions with DB ids.
+          try {
+            const data = JSON.parse((evt as MessageEvent).data) as {
+              execution_id: string;
+              level: string;
+              message: string;
+            };
+            const newLog: ExecutionLog = {
+              id: -(Date.now() + Math.random()),
+              execution_id: data.execution_id,
+              level: data.level as ExecutionLog['level'],
+              message: data.message,
+              created_at: new Date().toISOString(),
+            };
+            setLogs((prev) => [...prev, newLog]);
           } catch {
             // Ignore parse errors
           }
