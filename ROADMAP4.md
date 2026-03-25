@@ -369,8 +369,12 @@ class TurnContext:
 ```python
 # skills/summarize.py
 
-class SummarizeSkill(BaseSkill):
-    """Issue 完成后生成结构化总结，存入 issue_memories。"""
+class SummarizeSkill:
+    """Issue 完成后生成结构化总结，存入 issue_memories。
+
+    不继承 BaseSkill——纯 prompt 构建 + JSON 提取，
+    直接调用 client.run_prompt()，类似 _run_plan 的模式。
+    """
 
     def _build_prompt(self, issue: Issue, git_diff: str,
                       execution_history: list[dict], spec: str | None) -> str:
@@ -410,7 +414,8 @@ Output MUST be valid JSON:
 await self.issue_repo.update_status(issue_id, IssueStatus.review)
 
 # 新增：异步生成 Issue Memory（不阻塞主流程）
-asyncio.create_task(self._generate_issue_memory(issue_id))
+task = asyncio.create_task(self._generate_issue_memory(issue_id))
+task.add_done_callback(_suppress_task_exception)  # 捕获异常避免 unhandled warning
 ```
 
 **容错**：Memory 生成失败不影响 Issue 状态（已经是 `review`），只记录 warn 日志。
@@ -420,8 +425,12 @@ asyncio.create_task(self._generate_issue_memory(issue_id))
 ```python
 # skills/distill.py
 
-class DistillSkill(BaseSkill):
-    """从多条 Issue Memory 归纳 Project Memory。"""
+class DistillSkill:
+    """从多条 Issue Memory 归纳 Project Memory。
+
+    不继承 BaseSkill——纯 prompt 构建类，
+    由 Runtime 的 _run_distill() 调用 client.run_prompt() 执行。
+    """
 
     def _build_prompt(self, project: Project,
                       issue_memories: list[IssueMemory],
@@ -479,17 +488,23 @@ Output ONLY Markdown text, no JSON wrapping."""
 
 - 新增 `ProjectRepo`（CRUD + `list_all`）
 - 新增 `IssueMemoryRepo`（create + `list_by_project` + `get_by_issue`）
-- 新增 `ProjectMemoryRepo`（create + `get_latest_by_project`）
+- 新增 `ProjectMemoryRepo`（create + `get_latest_by_project` + 版本清理）
 - `IssueRepo.list_all()` 新增 `project_id` 筛选参数
-- `IssueRepo.create()` 写入 `project_id`
-- `_ALLOWED_ISSUE_FIELDS` 新增 `project_id`
+- `IssueRepo.create()` INSERT SQL：`workspace` → `project_id`（`INSERT INTO issues (id, title, description, project_id, priority) VALUES (?, ?, ?, ?, ?)`）
+- `IssueRepo.delete()` 级联新增 `DELETE FROM issue_memories WHERE issue_id = ?`（在删除 executions 之后、删除 issue 之前执行）
+- `_ALLOWED_ISSUE_FIELDS` 新增 `project_id`，**移除 `workspace`**
+- `IssueRetry` 模型移除 `workspace` 字段；`retry_reset()` 方法移除 `workspace` 参数及相关 SQL（retry 时不再允许改路径，路径由 Project 决定）
 
 **Runtime 变更 `runtime.py`**
 
 - `__init__` 新增 `ProjectRepo` 实例
-- `_resolve_workspace()` 从 `project.repo_path` 取值，不再从 `issue.workspace` 或全局配置
-- `_git_push()` / `_create_pr()` / `_get_git_diff()` 从 Project 读取 `remote` / `pr_base` / `default_branch`
-- 方法签名变更：需要传入 `project` 对象（或在 `_run_task` 开头加载一次，贯穿整个流程）
+- **`_resolve_workspace()` 迁移**：签名从 `_resolve_workspace(self, issue: Issue)` 改为 `_resolve_workspace(self, project: Project)`。内部 `raw = issue.workspace or self.settings.project.workspace` 简化为 `raw = project.repo_path`，**三层搜索逻辑（精确匹配 → 子目录扫描 → 向上遍历）保留不变**，作为容错机制（用户可能填了仓库父目录或子目录）。`_is_git_repo()` 静态方法不变
+- **Project 传递策略**：在 `_run_task` / `_run_plan` 开头加载一次 `project = await self.project_repo.get(issue.project_id)`，作为局部变量贯穿整个方法。不改 `_git_push` 等方法签名——而是将 Project 属性解构传入（如 `remote=project.remote`），使 git 操作方法保持纯粹的工具函数性质
+- `_git_push(branch_name, *, cwd, remote)` — 不再读 `self.settings.project.remote`，改为接收 `remote` 参数
+- `_create_pr(branch_name, issue, *, cwd, pr_base)` — 同上
+- `_get_git_diff(*, cwd, default_branch)` — 同上
+- `_get_changed_files(branch_name, *, cwd, pr_base)` — 同上
+- **`_run_plan()` 适配**：开头加载 `project`，`workspace = self._resolve_workspace(issue)` → `workspace = self._resolve_workspace(project)`
 
 **路由变更 `routes.py`**
 
@@ -498,14 +513,23 @@ POST   /api/projects                创建 Project
 GET    /api/projects                列出 Project
 GET    /api/projects/{id}           获取 Project 详情
 PATCH  /api/projects/{id}           编辑 Project
-DELETE /api/projects/{id}           删除 Project（仅无 Issue 时可删）
+DELETE /api/projects/{id}           删除 Project（仅无 Issue 时可删，default 禁止删除）
 GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 ```
+
+**删除 Project 的完整守卫**：
+1. `default` Project 禁止删除（作为兜底）
+2. 检查 `SELECT COUNT(*) FROM issues WHERE project_id = ?` — 有 Issue 则拒绝
+3. 删除时级联清理 `project_memories`（Project 没了，知识也没意义了）
+4. `issue_memories` 不需要单独处理——它们跟随 Issue 生命周期，Issue 不存在时 issue_memories 已被级联删除
+
+**`retry_issue` 路由适配**：不再传 `workspace`，仅传 `human_instruction`
 
 **Config 变更 `config.py`**
 
 - `ProjectConfig` 字段保留，作为 `ProjectCreate` 的默认值来源
 - 新增 `ContextConfig.max_project_memory_chars = 3000`
+- 新增 `ContextConfig.max_memory_versions = 10`（Project Memory 版本上限）
 
 **涉及文件**
 
@@ -517,6 +541,12 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 | `src/mango/agent/runtime.py` | 修改 |
 | `src/mango/server/routes.py` | 修改 |
 | `src/mango/config.py` | 修改 |
+| `tests/conftest.py` | 修改（`mock_runtime` 需创建 DB Project 记录替代 `settings.project.*`） |
+| `tests/test_api.py` | 修改（Issue 创建加 `project_id`，新增 Project API 测试） |
+| `tests/test_runtime.py` | 修改（Runtime 从 Project 读 git 配置） |
+| `tests/test_db.py` | 修改（Migration 007 执行验证） |
+
+> **注意**：测试适配必须在第一步完成，而非推迟到第五步——改完 Runtime 后现有测试会全部失败。`conftest.py` 的 `mock_runtime` fixture 当前通过 `object.__setattr__(settings.project, "workspace", ...)` 设置配置，改为 Project 实体后需要在 DB 中创建 Project 记录。
 
 **验收标准**
 
@@ -525,8 +555,9 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 - [ ] 创建 Issue 时必须指定 `project_id`
 - [ ] `GET /api/issues?project_id=xxx` 按 Project 过滤
 - [ ] Runtime 从 Project 读取 git 配置（remote / pr_base / default_branch）
-- [ ] 删除 Project 时校验无关联 Issue
-- [ ] 现有测试适配通过
+- [ ] `_run_plan` 从 Project 读取 workspace 和 git 配置
+- [ ] 删除 Project 时校验无关联 Issue，`default` 禁止删除
+- [ ] 现有测试适配通过（`conftest.py` / `test_api.py` / `test_runtime.py` / `test_db.py`）
 
 ---
 
@@ -537,12 +568,23 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 **新增 `skills/summarize.py`**
 
 - `SummarizeSkill` 实现（参见上文）
+- **不继承 `BaseSkill`**——它是纯 prompt 构建 + JSON 提取，不需要 OpenCode 的文件修改能力。直接调用 `client.run_prompt()` 读取 LLM 输出，类似 `_run_plan` 的模式
 - 复用 `extract_spec_json()` 的 JSON 提取逻辑（从 plan.py 提取为公共函数 `utils/json_extract.py`）
 - 新增 `validate_memory()` 校验 + 规范化字段
 
+**JSON 提取函数迁移策略**：
+- `test_plan_skill.py` 中 `extract_spec_json` 的 8 个提取测试 → 迁移到 `test_json_extract.py`
+- `test_plan_skill.py` 中 `validate_spec` 的测试 → 保留在 `test_plan_skill.py`（validate_spec 仍属于 plan 模块）
+- `test_plan_skill.py` 改为 `from mango.utils.json_extract import extract_spec_json`
+
 **Runtime 变更 `runtime.py`**
 
-- `_run_task()` 中 PR 创建成功后，`asyncio.create_task(self._generate_issue_memory(...))`
+- `_run_task()` 中 PR 创建成功后，异步生成 Issue Memory：
+  ```python
+  task = asyncio.create_task(self._generate_issue_memory(issue_id))
+  task.add_done_callback(_suppress_task_exception)
+  ```
+  辅助函数 `_suppress_task_exception` 捕获异常避免 "Task exception was never retrieved" 警告
 - `_generate_issue_memory()` 方法：
   1. 调用 `SummarizeSkill`
   2. 提取 JSON
@@ -557,6 +599,7 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 | `src/mango/utils/json_extract.py` | **新增**（从 plan.py 提取） |
 | `src/mango/skills/plan.py` | 修改（引用提取后的函数） |
 | `src/mango/agent/runtime.py` | 修改 |
+| `tests/test_plan_skill.py` | 修改（`extract_spec_json` 测试迁移到 `test_json_extract.py`，import 路径更新） |
 
 **验收标准**
 
@@ -575,11 +618,13 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 
 - `DistillSkill` 实现（参见上文）
 - 输出纯 Markdown 文本（不需要 JSON 提取）
+- **不继承 `BaseSkill`**——与 SummarizeSkill 同理，是纯 prompt 构建类
 
 **Context 变更 `context.py`**
 
-- `build_turn_context()` 新增 `project_memory` 参数
+- `build_turn_context()` 新增 `project_memory: str | None = None` 参数
 - 截断逻辑：`_truncate_by_chars(project_memory, ctx_cfg.max_project_memory_chars)`
+- 返回 `TurnContext(..., project_memory=truncated_memory)`
 
 **Skill 变更**
 
@@ -589,7 +634,14 @@ GET    /api/issues?project_id=xxx   按 Project 过滤 Issue
 **Runtime 变更 `runtime.py`**
 
 - `_run_turn()` 中构建 TurnContext 时，从 DB 读取最新 Project Memory 注入
-- `start_distill()` 方法：加载 Issue Memories → 调用 DistillSkill → 写入 `project_memories`
+- `start_distill(project_id)` 方法 + `_run_distill(project_id)` 内部实现：
+  1. 加载 Project + Issue Memories + 最新 Project Memory
+  2. 构建 prompt（`DistillSkill._build_prompt`）
+  3. 调用 `self.client.run_prompt(prompt, cwd=project.repo_path)`（复用 OpenCode client，不走 execute 链路）
+  4. 写入 `project_memories` 表（版本号 = 上次 + 1）
+  5. 版本清理：删除超出 `max_memory_versions` 的旧版本
+  6. 失败时返回错误，不影响 Project 状态
+- 路由中**同步等待**结果（不用 `asyncio.create_task`），因为用户手动触发 Distill 时期望看到 loading → 完成
 
 **路由变更 `routes.py`**
 
@@ -646,7 +698,11 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 
 **Kanban 过滤**
 
-`useIssues.ts` 的 `GET /api/issues` 加 `project_id` 查询参数，Kanban 只显示当前 Project 的 Issue。
+`useIssues.ts` 签名变为 `useIssues(projectId: string)`，内部 `GET /api/issues` 加 `project_id` 查询参数，Kanban 只显示当前 Project 的 Issue。
+
+**Project 状态管理**
+
+`App.tsx` 新增 `useState<string>` 管理 `currentProjectId`，通过 props 逐层传递（TopBar / KanbanBoard / IssueForm）。不引入 Context —— 组件层级只有 2-3 层，props 够用。`currentProjectId` 持久化到 `localStorage`，刷新后恢复。
 
 **Card Detail Modal — Memory Tab**
 
@@ -672,7 +728,8 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 | `web/src/components/ProjectSettings.tsx` | **新增** |
 | `web/src/components/MemoryTab.tsx` | **新增** |
 | `web/src/components/CardDetailModal.tsx` | 修改 |
-| `web/src/components/IssueForm.tsx` | 修改（project_id 替代 workspace） |
+| `web/src/components/IssueForm.tsx` | 修改（`workspace` 输入 → `project_id` 下拉选择，默认选当前 Project） |
+| `web/src/components/RetryInput.tsx` | 修改（移除 workspace 输入框） |
 | `web/src/hooks/useIssues.ts` | 修改（加 project_id 过滤） |
 | `web/src/hooks/useProjects.ts` | **新增** |
 | `web/src/api/client.ts` | 修改（Project API + Memory API） |
@@ -691,6 +748,8 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 
 ### 第五步：测试 + 集成验证
 
+> 基础测试适配已在各步骤中完成，本步骤聚焦**新增测试**和**端到端验证**。
+
 **新增测试**
 
 | 文件 | 覆盖内容 |
@@ -703,9 +762,10 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 
 | 文件 | 改动 |
 |------|------|
-| `tests/test_api.py` | 所有 Issue 创建加 project_id；新增 Project API 测试 |
-| `tests/test_runtime.py` | Runtime 从 Project 读 git 配置；Issue Memory 自动生成 |
-| `tests/test_db.py` | Migration 007 执行验证 |
+| `tests/test_api.py` | 新增 Project API 测试（CRUD、过滤、删除守卫）；基础适配已在第一步完成 |
+| `tests/test_runtime.py` | Issue Memory 自动生成测试；Project Memory 注入测试；基础适配已在第一步完成 |
+| `tests/test_db.py` | 新增 Memory 相关 DB 测试；基础适配已在第一步完成 |
+| `tests/test_plan_skill.py` | `extract_spec_json` 测试迁移到 `test_json_extract.py`，import 路径更新 |
 
 **端到端验证流程**
 
@@ -719,7 +779,7 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 
 ## 文件清单汇总
 
-### 新增文件（10 个）
+### 新增文件（12 个）
 
 | # | 文件 | 所属阶段 |
 |---|------|---------|
@@ -736,7 +796,7 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 | 11 | `tests/test_memory.py` | 第五步 |
 | 12 | `tests/test_json_extract.py` | 第五步 |
 
-### 修改文件（16 个）
+### 修改文件（20 个）
 
 | # | 文件 | 涉及阶段 |
 |---|------|---------|
@@ -751,13 +811,15 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 | 9 | `web/src/components/TopBar.tsx` | 第四步 |
 | 10 | `web/src/components/CardDetailModal.tsx` | 第四步 |
 | 11 | `web/src/components/IssueForm.tsx` | 第四步 |
-| 12 | `web/src/hooks/useIssues.ts` | 第四步 |
-| 13 | `web/src/api/client.ts` | 第四步 |
-| 14 | `web/src/types/index.ts` | 第四步 |
-| 15 | `web/src/App.tsx` | 第四步 |
-| 16 | `tests/test_api.py` | 第五步 |
-| 17 | `tests/test_runtime.py` | 第五步 |
-| 18 | `tests/test_db.py` | 第五步 |
+| 12 | `web/src/components/RetryInput.tsx` | 第四步（移除 workspace 输入框） |
+| 13 | `web/src/hooks/useIssues.ts` | 第四步 |
+| 14 | `web/src/api/client.ts` | 第四步 |
+| 15 | `web/src/types/index.ts` | 第四步 |
+| 16 | `web/src/App.tsx` | 第四步 |
+| 17 | `tests/conftest.py` | 第一步（mock_runtime fixture 适配） |
+| 18 | `tests/test_api.py` | 第一步 + 第五步 |
+| 19 | `tests/test_runtime.py` | 第一步 + 第五步 |
+| 20 | `tests/test_db.py` | 第一步 + 第五步 |
 
 ---
 
@@ -765,12 +827,12 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 
 | 阶段 | 范围 | 工期 |
 |------|------|------|
-| 第一步 | Project 实体 + DB + API + Runtime 适配 | ~3 天 |
-| 第二步 | SummarizeSkill + Issue Memory | ~2 天 |
+| 第一步 | Project 实体 + DB + API + Runtime 适配 + 现有测试适配 | ~4 天 |
+| 第二步 | SummarizeSkill + Issue Memory + JSON 提取函数迁移 | ~2 天 |
 | 第三步 | DistillSkill + Project Memory + Skill 注入 | ~2.5 天 |
-| 第四步 | 前端 Project 切换 + Memory 展示 | ~3 天 |
-| 第五步 | 测试 + 集成验证 | ~2 天 |
-| **总计** | | **~12.5 天** |
+| 第四步 | 前端 Project 切换 + Memory 展示 + 状态管理 | ~3.5 天 |
+| 第五步 | 新增测试 + 端到端集成验证 | ~1.5 天 |
+| **总计** | | **~13.5 天** |
 
 ---
 
@@ -785,6 +847,20 @@ GET    /api/issues/{id}/memory             查看单条 Issue Memory
 | 5 | `extract_spec_json()` 提取为公共函数 | SummarizeSkill 也需要从 LLM 输出提取 JSON，消除重复 |
 | 6 | Memory 生成失败不阻塞主流程 | Memory 是增值功能，不应影响核心链路（Issue → PR）的可靠性 |
 | 7 | `workspace` 字段保留但废弃 | 避免破坏性迁移，旧数据仍可读，新代码不再写入 |
+
+---
+
+## 风险与回滚
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| Migration 007 执行失败（如 ALTER TABLE 在某些 SQLite 版本不支持 DEFAULT + REFERENCES） | 数据库无法升级 | CI 中使用 SQLite 3.35+；提供手动回滚 SQL |
+| 现有 Issue 的 `workspace` 值丢失语义 | 用户自定义的 workspace 路径丢失 | 迁移时将 TOML `[project].workspace` 值写入 default Project 的 `repo_path`；保留 workspace 字段只读 |
+| SummarizeSkill LLM 输出不可控 | issue_memories 写入垃圾数据 | `validate_memory()` 校验 + 字段长度限制；失败不写入 |
+| Distill 归纳质量差 | Project Memory 误导后续 Issue | 用户可查看/删除 Memory 版本；注入前截断限制影响范围 |
+| `IssueCreate.workspace → project_id` 是破坏性 API 变更 | 前端和测试同时失败 | 第一步同时改前端 `IssueForm.tsx` 和所有测试，不留过渡期 |
+
+**回滚策略**：每步可独立回滚。第一步的 DB migration 是不可逆的（ALTER TABLE ADD COLUMN），但 `project_id DEFAULT 'default'` 保证旧代码仍可读取数据。建议在生产执行 migration 前备份 DB 文件。
 
 ---
 
