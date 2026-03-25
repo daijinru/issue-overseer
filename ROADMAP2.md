@@ -187,13 +187,13 @@ open → planning → planned → running → done (PR created)
      POST /plan           POST /run
 ```
 
-- [ ] 新增状态 `planning` / `planned`
-- [ ] `POST /api/issues/{id}/plan`：调用 OpenCode 生成 Spec（PlanSkill）
-- [ ] Spec 结构：`{plan: string, acceptance_criteria: string[], files: string[]}`
-- [ ] `PUT /api/issues/{id}/spec`：用户编辑 Spec
-- [ ] `POST /api/issues/{id}/run`：执行时将 Spec 注入 TurnContext
-- [ ] 前端 Spec 卡片：展示计划 + 验收标准，"确认执行" / "重新生成" 按钮
-- [ ] Spec 是可选流程：用户可以从 `open` 直接 `run`，跳过 plan
+- [x] 新增状态 `planning` / `planned`
+- [x] `POST /api/issues/{id}/plan`：调用 OpenCode 生成 Spec（PlanSkill）
+- [x] Spec 结构：`{plan: string, acceptance_criteria: string[], files: string[]}`
+- [x] `PUT /api/issues/{id}/spec`：用户编辑 Spec
+- [x] `POST /api/issues/{id}/run`：执行时将 Spec 注入 TurnContext
+- [x] 前端 Spec 卡片：展示计划 + 验收标准，"确认执行" / "重新生成" 按钮
+- [x] Spec 是可选流程：用户可以从 `open` 直接 `run`，跳过 plan
 
 涉及文件：`models.py`、`routes.py`、`repos.py`、新增 `skills/plan.py`、前端新增 `SpecCard.tsx`、`001_init.sql`（加 spec 字段）
 

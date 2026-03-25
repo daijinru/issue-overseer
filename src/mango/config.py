@@ -20,6 +20,7 @@ class ServerConfig(BaseModel):
 class AgentConfig(BaseModel):
     max_turns: int = 3
     task_timeout: int = 1800
+    plan_timeout: int = 600  # 10 minutes — plan generation needs more time than execution
 
 
 class OpenCodeConfig(BaseModel):

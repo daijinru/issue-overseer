@@ -179,13 +179,29 @@ class FakeStdout:
 
 
 class FakeStderr:
-    """Simulates async read from proc.stderr."""
+    """Simulates async read from proc.stderr.
+
+    Supports both ``read()`` (return all) and ``read(n)`` (return up to *n*
+    bytes per call, then ``b""`` for EOF) so the concurrent ``_drain_stderr``
+    loop works correctly.
+    """
 
     def __init__(self, data: bytes = b""):
         self._data = data
+        self._pos = 0
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, n: int = -1) -> bytes:
+        if n < 0:
+            # read() without size — return everything remaining
+            remaining = self._data[self._pos:]
+            self._pos = len(self._data)
+            return remaining
+        # read(n) — return up to n bytes, then b"" for EOF
+        if self._pos >= len(self._data):
+            return b""
+        chunk = self._data[self._pos:self._pos + n]
+        self._pos += len(chunk)
+        return chunk
 
 
 class StreamingFakeProcess:
@@ -517,3 +533,191 @@ async def test_run_prompt_streaming_nonzero_exit(monkeypatch):
     client = OpenCodeClient(command="opencode", timeout=10)
     with pytest.raises(RuntimeError, match="fatal error"):
         await client.run_prompt("fail", cwd="/tmp")
+
+
+# ── stderr drain / deadlock prevention tests ──────────────────────────
+
+
+class BlockingStderrFakeProcess:
+    """Simulates a process that produces lots of stderr *before* writing to stdout.
+
+    In the old implementation (no concurrent stderr drain), writing >64 KB to
+    stderr while the parent only reads stdout would deadlock because the OS
+    pipe buffer fills up.  Here we simulate it: stdout blocks until stderr has
+    been fully consumed.  If the caller doesn't drain stderr concurrently,
+    the test will hang (and eventually be killed by the pytest timeout).
+    """
+
+    def __init__(self, stdout_data: bytes, stderr_data: bytes, returncode: int = 0):
+        self._stdout_data = stdout_data
+        self._stderr_data = stderr_data
+        self.returncode = returncode
+        # stderr must be drained before stdout produces data
+        self._stderr_drained = asyncio.Event()
+        self.stdout = self._StdoutSide(self)
+        self.stderr = self._StderrSide(self)
+
+    def kill(self):
+        # Unblock everything so cleanup doesn't hang
+        self._stderr_drained.set()
+
+    async def wait(self):
+        pass
+
+    class _StdoutSide:
+        """Stdout that blocks on readline until stderr has been fully drained."""
+
+        def __init__(self, parent: "BlockingStderrFakeProcess"):
+            self._parent = parent
+            self._lines = [
+                line + b"\n"
+                for line in parent._stdout_data.split(b"\n")
+                if line
+            ]
+            self._index = 0
+
+        async def readline(self) -> bytes:
+            # Wait until stderr has been drained — simulates the OS-level
+            # pipe back-pressure that causes the real deadlock.
+            await self._parent._stderr_drained.wait()
+            if self._index >= len(self._lines):
+                return b""
+            line = self._lines[self._index]
+            self._index += 1
+            return line
+
+        async def read(self) -> bytes:
+            return b"".join(self._lines[self._index:])
+
+    class _StderrSide:
+        """Stderr that signals 'drained' once all data has been read."""
+
+        def __init__(self, parent: "BlockingStderrFakeProcess"):
+            self._parent = parent
+            self._data = parent._stderr_data
+            self._pos = 0
+
+        async def read(self, n: int = -1) -> bytes:
+            if n < 0:
+                remaining = self._data[self._pos:]
+                self._pos = len(self._data)
+                self._parent._stderr_drained.set()
+                return remaining
+            if self._pos >= len(self._data):
+                # EOF — signal that stderr is fully consumed
+                self._parent._stderr_drained.set()
+                return b""
+            chunk = self._data[self._pos:self._pos + n]
+            self._pos += len(chunk)
+            # If we've consumed everything, signal
+            if self._pos >= len(self._data):
+                self._parent._stderr_drained.set()
+            return chunk
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stderr_drain_prevents_deadlock(monkeypatch):
+    """Concurrent stderr drain prevents pipe-buffer deadlock.
+
+    The BlockingStderrFakeProcess simulates the real deadlock scenario:
+    stdout won't produce data until stderr has been fully consumed.
+    Without the concurrent drain, this test would hang indefinitely.
+    """
+    stdout_event = json.dumps({
+        "type": "text",
+        "part": {"type": "text", "text": "plan result"},
+    }).encode()
+    # Simulate > 64 KB of stderr output (enough to fill a real OS pipe buffer)
+    stderr_data = b"WARNING: some debug log\n" * 4000  # ~92 KB
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return BlockingStderrFakeProcess(
+            stdout_data=stdout_event, stderr_data=stderr_data, returncode=0,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = OpenCodeClient(command="opencode", timeout=10)
+    # This must complete without hanging.  If stderr is not drained
+    # concurrently, BlockingStderrFakeProcess will block stdout forever.
+    result = await client.run_prompt("generate spec", cwd="/tmp")
+    assert result == "plan result"
+
+
+@pytest.mark.asyncio
+async def test_stderr_collected_on_nonzero_exit(monkeypatch):
+    """stderr content should be available in error message even with concurrent drain."""
+    stdout_line = json.dumps({
+        "parts": [{"type": "text", "text": "partial"}],
+    }).encode()
+    stderr_msg = b"FATAL: API key expired"
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return BlockingStderrFakeProcess(
+            stdout_data=stdout_line, stderr_data=stderr_msg, returncode=1,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = OpenCodeClient(command="opencode", timeout=10)
+    with pytest.raises(RuntimeError, match="API key expired"):
+        await client.run_prompt("fail", cwd="/tmp")
+
+
+@pytest.mark.asyncio
+async def test_stderr_drain_cleanup_on_cancel(monkeypatch):
+    """stderr drain task should be cleaned up when execution is cancelled."""
+    killed = {"value": False}
+
+    class CancellableFakeProcess:
+        def __init__(self):
+            self.stdout = SlowFakeStdout()
+            self.stderr = FakeStderr(b"some stderr")
+            self.returncode = -9
+
+        def kill(self):
+            killed["value"] = True
+
+        async def wait(self):
+            pass
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return CancellableFakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = OpenCodeClient(command="opencode", timeout=10)
+    cancel = asyncio.Event()
+
+    async def fire_cancel():
+        await asyncio.sleep(0.05)
+        cancel.set()
+
+    asyncio.create_task(fire_cancel())
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.run_prompt("hello", cwd="/tmp", cancel_event=cancel)
+
+    assert killed["value"], "Process should have been killed"
+
+
+@pytest.mark.asyncio
+async def test_large_stderr_does_not_affect_stdout_result(monkeypatch):
+    """Large stderr output should not corrupt or interfere with stdout result."""
+    stdout_lines = [
+        json.dumps({"type": "text", "part": {"type": "text", "text": "step 1"}}).encode() + b"\n",
+        json.dumps({"type": "text", "part": {"type": "text", "text": "final answer"}}).encode() + b"\n",
+    ]
+    # 128 KB of stderr
+    large_stderr = b"DEBUG: reading file xyz.py\n" * 5000
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return StreamingFakeProcess(
+            stdout_lines=stdout_lines, stderr=large_stderr, returncode=0,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = OpenCodeClient(command="opencode", timeout=10)
+    result = await client.run_prompt("do work", cwd="/tmp")
+    assert result == "final answer"

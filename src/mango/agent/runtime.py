@@ -111,8 +111,12 @@ class AgentRuntime:
     async def _run_plan(self, issue_id: str, cancel_event: asyncio.Event) -> None:
         """Execute the plan flow: open → planning → PlanSkill → planned.
 
-        Retry strategy: on JSON extraction failure, retry once with a stricter
-        prompt. If retry also fails → waiting_human.
+        Retry strategy: on JSON extraction failure OR timeout, retry once with
+        a stricter prompt. If retry also fails → waiting_human.
+
+        Uses ``agent.plan_timeout`` (default 600s) instead of
+        ``opencode.timeout`` — plan generation needs more time because it
+        reads the whole codebase before producing a spec.
         """
         issue = await self.issue_repo.get(issue_id)
         assert issue is not None
@@ -125,6 +129,7 @@ class AgentRuntime:
             human_instruction=issue.human_instruction,
         )
 
+        plan_timeout = self.settings.agent.plan_timeout
         max_attempts = 2  # 1 normal + 1 strict retry
         raw_output: str | None = None
 
@@ -157,7 +162,7 @@ class AgentRuntime:
                     asyncio.create_task(self._persist_step(execution_id, event))
 
                 try:
-                    async with asyncio.timeout(self.settings.opencode.timeout):
+                    async with asyncio.timeout(plan_timeout):
                         raw_output = await self.plan_skill.client.run_prompt(
                             prompt, cwd=workspace,
                             cancel_event=cancel_event, on_event=on_opencode_event,
@@ -168,10 +173,20 @@ class AgentRuntime:
                 except TimeoutError:
                     await self.exec_repo.finish(
                         execution_id, status=ExecutionStatus.timeout,
-                        error_message="Plan generation timed out",
+                        error_message=f"Plan generation timed out after {plan_timeout}s",
                     )
-                    await self._fail_plan(issue_id, "Spec 生成超时")
-                    return
+                    logger.warning(
+                        "Plan %s: timed out after %ds (attempt %d/%d)",
+                        issue_id, plan_timeout, attempt + 1, max_attempts,
+                    )
+                    # Allow retry on timeout — only fail after all attempts
+                    if attempt + 1 >= max_attempts:
+                        await self._fail_plan(
+                            issue_id,
+                            f"Spec 生成超时（{plan_timeout}s，已重试 {max_attempts} 次）",
+                        )
+                        return
+                    continue
                 except asyncio.CancelledError:
                     await self.exec_repo.finish(
                         execution_id, status=ExecutionStatus.cancelled,
@@ -241,7 +256,8 @@ class AgentRuntime:
         """Return the working directory for an issue, falling back to global config.
 
         If the resolved path itself is a git repo, return it.
-        Otherwise walk upward; if still nothing, scan immediate children.
+        Otherwise scan immediate children first (common: user gave repo parent),
+        then walk upward as last resort.
         Returns the best candidate so git operations have the right cwd.
         """
         from pathlib import Path
@@ -250,24 +266,39 @@ class AgentRuntime:
         resolved = Path(raw).resolve()
 
         # 1. Exact match — path itself is a git repo
-        if (resolved / ".git").exists():
+        if self._is_git_repo(resolved):
             return str(resolved)
 
-        # 2. Walk upward (user gave a subdirectory of the repo)
-        for parent in resolved.parents:
-            if (parent / ".git").exists():
-                return str(parent)
-
-        # 3. Scan immediate children (user gave the parent of the repo)
+        # 2. Scan immediate children FIRST (user gave the parent of the repo)
+        #    This is more common than giving a subdirectory of a repo.
         try:
             for child in sorted(resolved.iterdir()):
-                if child.is_dir() and (child / ".git").exists():
+                if child.is_dir() and self._is_git_repo(child):
                     return str(child)
         except OSError:
             pass
 
+        # 3. Walk upward (user gave a subdirectory of the repo)
+        for parent in resolved.parents:
+            if self._is_git_repo(parent):
+                return str(parent)
+
         # Nothing found — return original so the caller produces a clear error
         return str(resolved)
+
+    @staticmethod
+    def _is_git_repo(path) -> bool:
+        """Check if a path is a real git repository (not just an empty .git dir)."""
+        git_dir = path / ".git"
+        if not git_dir.exists():
+            return False
+        # A real git repo has .git/HEAD; an empty .git directory does not
+        if git_dir.is_dir():
+            return (git_dir / "HEAD").exists()
+        # .git can also be a file (worktree pointer): "gitdir: /path/to/..."
+        if git_dir.is_file():
+            return True
+        return False
 
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
         issue = await self.issue_repo.get(issue_id)

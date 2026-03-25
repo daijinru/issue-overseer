@@ -17,6 +17,13 @@ from mango.skills.base import BaseSkill
 
 logger = logging.getLogger(__name__)
 
+# ── Spec field length limits ─────────────────────────────────────────
+_MAX_PLAN_CHARS = 2000
+_MAX_CRITERION_CHARS = 200
+_MAX_CRITERIA_COUNT = 20
+_MAX_FILES_COUNT = 50
+_MAX_SPEC_TOTAL_CHARS = 10000
+
 
 def extract_spec_json(raw_output: str) -> dict | None:
     """Robustly extract Spec JSON from LLM output.
@@ -61,22 +68,64 @@ def extract_spec_json(raw_output: str) -> dict | None:
 
 
 def validate_spec(data: dict) -> dict:
-    """Validate and normalize Spec fields, accepting loosely.
+    """Validate, normalize, and truncate Spec fields.
 
     Handles both snake_case and camelCase field names.
+    Enforces per-field and total length limits to keep the spec
+    within a reasonable token budget when injected into prompts.
     """
-    return {
-        "plan": data.get("plan", data.get("Plan", "")),
-        "acceptance_criteria": data.get(
-            "acceptance_criteria", data.get("acceptanceCriteria", [])
-        ),
-        "files_to_modify": data.get(
-            "files_to_modify", data.get("filesToModify", [])
-        ),
-        "estimated_complexity": data.get(
-            "estimated_complexity", data.get("complexity", "medium")
-        ),
+    plan = str(data.get("plan", data.get("Plan", "")))
+    if len(plan) > _MAX_PLAN_CHARS:
+        plan = plan[:_MAX_PLAN_CHARS] + "…[truncated]"
+
+    raw_criteria = data.get(
+        "acceptance_criteria", data.get("acceptanceCriteria", [])
+    )
+    if not isinstance(raw_criteria, list):
+        raw_criteria = []
+    criteria: list[str] = []
+    for c in raw_criteria[:_MAX_CRITERIA_COUNT]:
+        s = str(c)
+        if len(s) > _MAX_CRITERION_CHARS:
+            s = s[:_MAX_CRITERION_CHARS] + "…[truncated]"
+        criteria.append(s)
+
+    raw_files = data.get("files_to_modify", data.get("filesToModify", []))
+    if not isinstance(raw_files, list):
+        raw_files = []
+    files: list[str] = [str(f) for f in raw_files[:_MAX_FILES_COUNT]]
+
+    complexity = str(
+        data.get("estimated_complexity", data.get("complexity", "medium"))
+    )
+
+    result = {
+        "plan": plan,
+        "acceptance_criteria": criteria,
+        "files_to_modify": files,
+        "estimated_complexity": complexity,
     }
+
+    # Final guard: truncate the entire JSON representation
+    serialized = json.dumps(result, ensure_ascii=False)
+    if len(serialized) > _MAX_SPEC_TOTAL_CHARS:
+        logger.warning(
+            "Spec total size %d exceeds %d, truncating fields",
+            len(serialized), _MAX_SPEC_TOTAL_CHARS,
+        )
+        # Progressively shrink: first criteria, then plan
+        while len(serialized) > _MAX_SPEC_TOTAL_CHARS and len(result["acceptance_criteria"]) > 1:
+            result["acceptance_criteria"].pop()
+            serialized = json.dumps(result, ensure_ascii=False)
+        if len(serialized) > _MAX_SPEC_TOTAL_CHARS:
+            allowed = _MAX_SPEC_TOTAL_CHARS - (len(serialized) - len(result["plan"]))
+            if allowed > 0:
+                result["plan"] = result["plan"][:allowed] + "…[truncated]"
+            else:
+                result["plan"] = "…[truncated]"
+            serialized = json.dumps(result, ensure_ascii=False)
+
+    return result
 
 
 class PlanSkill(BaseSkill):

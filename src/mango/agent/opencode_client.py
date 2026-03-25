@@ -24,11 +24,21 @@ For ``text`` the content is at ``event["part"]["text"]``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _suppress_cancel():
+    """Suppress ``CancelledError`` when awaiting a cancelled task during cleanup."""
+    try:
+        yield
+    except asyncio.CancelledError:
+        pass
 
 # Maximum length for text summaries in classified events.
 _MAX_SUMMARY_LEN = 200
@@ -69,10 +79,27 @@ class OpenCodeClient:
             cwd=cwd,
         )
 
-        try:
-            raw_lines: list[str] = []
-            last_text: str = ""
+        raw_lines: list[str] = []
+        last_text: str = ""
 
+        # ── Concurrently drain stderr to prevent pipe buffer deadlock ─
+        # If only stdout is read while stderr is piped, the OS pipe
+        # buffer for stderr (typically 64 KB) can fill up, causing the
+        # child process to block on its stderr write() — which in turn
+        # blocks stdout, deadlocking both sides.
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.read(4096)
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+
+        try:
             # ── Stream stdout line by line ──────────────────────────
             while True:
                 # Check cancel before each read
@@ -121,18 +148,38 @@ class OpenCodeClient:
                 if text:
                     last_text = text  # keep overwriting — last wins
 
-            # ── Wait for process to finish ──────────────────────────
+            # ── Wait for process and stderr drain to finish ───────
             await proc.wait()
+            await stderr_task
 
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise TimeoutError(
-                f"opencode process timed out after {self.timeout}s"
-            )
+        except (TimeoutError, asyncio.CancelledError):
+            # Outer asyncio.timeout() or task cancellation —
+            # kill the subprocess to prevent orphaned processes.
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            stderr_task.cancel()
+            with _suppress_cancel():
+                await stderr_task
+            logger.info("opencode process killed due to %s",
+                        "timeout" if not (cancel_event and cancel_event.is_set()) else "cancel")
+            raise
+        except Exception:
+            # Any unexpected error — still ensure subprocess is cleaned up.
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            stderr_task.cancel()
+            with _suppress_cancel():
+                await stderr_task
+            raise
 
-        # ── Read stderr for error reporting ─────────────────────────
-        stderr_bytes = await proc.stderr.read()
+        # ── Use collected stderr for error reporting ─────────────
+        stderr_bytes = b"".join(stderr_chunks)
 
         if proc.returncode != 0:
             err_msg = stderr_bytes.decode().strip() if stderr_bytes else "unknown error"

@@ -4,6 +4,7 @@ port = 18800
 [agent]
 max_turns = 3
 task_timeout = 1800
+plan_timeout = 600
 
 [opencode]
 command = "opencode"

@@ -9,7 +9,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 from mango.models import Issue, IssueStatus, IssuePriority, TurnContext
-from mango.skills.plan import PlanSkill, extract_spec_json, validate_spec
+from mango.skills.plan import (
+    PlanSkill,
+    extract_spec_json,
+    validate_spec,
+    _MAX_PLAN_CHARS,
+    _MAX_CRITERION_CHARS,
+    _MAX_CRITERIA_COUNT,
+    _MAX_FILES_COUNT,
+    _MAX_SPEC_TOTAL_CHARS,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -212,6 +221,81 @@ class TestValidateSpec:
         assert set(result.keys()) == {
             "plan", "acceptance_criteria", "files_to_modify", "estimated_complexity",
         }
+
+    # ── Length limit tests ────────────────────────────────────────────
+
+    def test_plan_truncated_when_too_long(self):
+        """Plan field exceeding _MAX_PLAN_CHARS is truncated."""
+        long_plan = "x" * (_MAX_PLAN_CHARS + 500)
+        data = {"plan": long_plan}
+        result = validate_spec(data)
+        assert len(result["plan"]) < len(long_plan)
+        assert result["plan"].endswith("…[truncated]")
+
+    def test_criterion_truncated_when_too_long(self):
+        """Individual acceptance criteria exceeding limit are truncated."""
+        long_criterion = "y" * (_MAX_CRITERION_CHARS + 100)
+        data = {"acceptance_criteria": [long_criterion, "short one"]}
+        result = validate_spec(data)
+        assert len(result["acceptance_criteria"]) == 2
+        assert result["acceptance_criteria"][0].endswith("…[truncated]")
+        assert result["acceptance_criteria"][1] == "short one"
+
+    def test_criteria_count_capped(self):
+        """Number of acceptance criteria is capped at _MAX_CRITERIA_COUNT."""
+        many_criteria = [f"criterion {i}" for i in range(_MAX_CRITERIA_COUNT + 10)]
+        data = {"acceptance_criteria": many_criteria}
+        result = validate_spec(data)
+        assert len(result["acceptance_criteria"]) == _MAX_CRITERIA_COUNT
+
+    def test_files_count_capped(self):
+        """Number of files_to_modify is capped at _MAX_FILES_COUNT."""
+        many_files = [f"src/file_{i}.py" for i in range(_MAX_FILES_COUNT + 20)]
+        data = {"files_to_modify": many_files}
+        result = validate_spec(data)
+        assert len(result["files_to_modify"]) == _MAX_FILES_COUNT
+
+    def test_total_spec_size_capped(self):
+        """Total serialized spec is kept within _MAX_SPEC_TOTAL_CHARS."""
+        # Create a spec that is huge in total but each field is within its own limit
+        data = {
+            "plan": "a" * _MAX_PLAN_CHARS,
+            "acceptance_criteria": ["b" * _MAX_CRITERION_CHARS] * _MAX_CRITERIA_COUNT,
+            "files_to_modify": [f"src/very/long/path/file_{i}.py" for i in range(_MAX_FILES_COUNT)],
+            "estimated_complexity": "high",
+        }
+        result = validate_spec(data)
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert len(serialized) <= _MAX_SPEC_TOTAL_CHARS
+
+    def test_normal_spec_unchanged(self):
+        """A normal-sized spec passes through without any truncation."""
+        data = {
+            "plan": "Implement SSE stream processing HTTP client method",
+            "acceptance_criteria": [
+                "Client can connect to SSE endpoint",
+                "Events are parsed correctly",
+                "Connection errors are handled",
+            ],
+            "files_to_modify": ["src/client.py", "tests/test_client.py"],
+            "estimated_complexity": "medium",
+        }
+        result = validate_spec(data)
+        assert result["plan"] == data["plan"]
+        assert result["acceptance_criteria"] == data["acceptance_criteria"]
+        assert result["files_to_modify"] == data["files_to_modify"]
+
+    def test_non_list_criteria_becomes_empty(self):
+        """Non-list acceptance_criteria is normalized to empty list."""
+        data = {"acceptance_criteria": "not a list"}
+        result = validate_spec(data)
+        assert result["acceptance_criteria"] == []
+
+    def test_non_list_files_becomes_empty(self):
+        """Non-list files_to_modify is normalized to empty list."""
+        data = {"files_to_modify": "not a list"}
+        result = validate_spec(data)
+        assert result["files_to_modify"] == []
 
 
 # ── PlanSkill prompt tests ──────────────────────────────────────────
