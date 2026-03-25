@@ -4,6 +4,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ExclamationCircleOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { ExecutionStatusTag } from './StatusTag';
 import type { Execution } from '../types';
@@ -38,12 +39,22 @@ export function ExecutionTimeline({ executions }: ExecutionTimelineProps) {
     return <Empty description="暂无执行记录" />;
   }
 
+  const isLifecycle = (exec: Execution) => exec.turn_number === 0 && exec.attempt_number === 0;
+
   const items = executions.map((exec) => ({
     key: exec.id,
     label: (
       <Space>
-        {getStatusIcon(exec.status)}
-        <span>Turn {exec.turn_number} / Attempt {exec.attempt_number}</span>
+        {isLifecycle(exec) ? (
+          <SettingOutlined style={{ color: '#8c8c8c' }} />
+        ) : (
+          getStatusIcon(exec.status)
+        )}
+        <span>
+          {isLifecycle(exec)
+            ? '任务生命周期'
+            : `Turn ${exec.turn_number} / Attempt ${exec.attempt_number}`}
+        </span>
         <ExecutionStatusTag status={exec.status} />
         <Tag>{formatDuration(exec.duration_ms)}</Tag>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -53,6 +64,13 @@ export function ExecutionTimeline({ executions }: ExecutionTimelineProps) {
     ),
     children: (
       <div>
+        {isLifecycle(exec) && (
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text type="secondary">
+              此记录为任务级生命周期日志（分支创建、Git 提交、PR 创建等），非 AI 执行轮次。详细日志请查看「执行日志」标签页。
+            </Typography.Text>
+          </div>
+        )}
         {exec.error_message && (
           <div style={{ marginBottom: 12 }}>
             <Typography.Text type="danger" strong>
