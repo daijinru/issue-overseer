@@ -28,8 +28,6 @@ export function LogViewer({ logs }: LogViewerProps) {
         fontFamily: 'monospace',
         fontSize: 13,
         lineHeight: 1.8,
-        maxHeight: 500,
-        overflow: 'auto',
       }}
     >
       {logs.map((log) => (

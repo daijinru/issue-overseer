@@ -143,8 +143,6 @@ export function StepList({ steps, isRunning }: StepListProps) {
   return (
     <div
       style={{
-        maxHeight: 500,
-        overflow: 'auto',
         lineHeight: 1.6,
       }}
     >
