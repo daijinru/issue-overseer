@@ -1,0 +1,17 @@
+[server]
+port = 18900
+host = "0.0.0.0"
+
+[runtime]
+url = "http://localhost:18800"
+timeout = 30
+
+[session]
+timeout_hours = 24
+cleanup_interval_minutes = 60
+
+[gateway]
+max_wait_timeout = 1800
+
+[database]
+path = "./data/gateway.db"
