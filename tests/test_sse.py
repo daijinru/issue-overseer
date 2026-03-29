@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mango.db.repos import IssueRepo
-from mango.models import IssueCreate, IssueStatus
-from mango.server.app import create_app
-from mango.server.event_bus import EventBus
+from agent.db.repos import IssueRepo
+from agent.models import IssueCreate, IssueStatus
+from agent.server.app import create_app
+from agent.server.event_bus import EventBus
 
 
 @pytest.fixture()

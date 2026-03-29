@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from mango.agent.opencode_client import OpenCodeClient
+from agent.agent.opencode_client import OpenCodeClient
 
 
 def _make_json_output(text: str) -> str:

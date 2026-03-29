@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mango.agent.context import build_turn_context
-from mango.models import Issue, IssueStatus
+from agent.agent.context import build_turn_context
+from agent.models import Issue, IssueStatus
 
 
 def _make_issue(**kwargs) -> Issue:
@@ -21,7 +21,7 @@ def _mock_settings(monkeypatch):
     mock_settings = MagicMock()
     mock_settings.context.max_git_diff_lines = 10
     mock_settings.context.max_result_chars = 100
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: mock_settings)
 
 
 def test_build_turn_context_passthrough_no_truncation():

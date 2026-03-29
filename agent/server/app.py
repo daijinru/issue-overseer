@@ -8,9 +8,9 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from mango.db.connection import close_shared_connection, init_db
-from mango.server.event_bus import EventBus
-from mango.server.routes import router
+from agent.db.connection import close_shared_connection, init_db
+from agent.server.event_bus import EventBus
+from agent.server.routes import router
 
 
 @asynccontextmanager
@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
     event_bus = EventBus()
     app.state.event_bus = event_bus
-    from mango.agent.runtime import AgentRuntime
+    from agent.agent.runtime import AgentRuntime
     runtime = AgentRuntime(event_bus=event_bus)
     await runtime.recover_from_restart()
     app.state.runtime = runtime

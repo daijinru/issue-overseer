@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from mango.cli.output import print_error
+from agent.cli.output import print_error
 
 
 class MangoClient:

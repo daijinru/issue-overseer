@@ -26,9 +26,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mango.agent.runtime import AgentRuntime
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
-from mango.models import ExecutionStatus, IssueCreate, IssueStatus
+from agent.agent.runtime import AgentRuntime
+from agent.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
+from agent.models import ExecutionStatus, IssueCreate, IssueStatus
 
 pytestmark = pytest.mark.e2e
 
@@ -147,7 +147,7 @@ def e2e_git_repo(tmp_path):
 @pytest.fixture()
 async def e2e_runtime(initialized_db, e2e_git_repo, monkeypatch):
     """AgentRuntime wired to the real opencode CLI and a test git repo with remote."""
-    from mango.config import get_settings
+    from agent.config import get_settings
 
     repo_path, _branches = e2e_git_repo
     settings = get_settings()
@@ -161,9 +161,9 @@ async def e2e_runtime(initialized_db, e2e_git_repo, monkeypatch):
     object.__setattr__(settings.opencode, "command", "opencode")
     object.__setattr__(settings.opencode, "timeout", 120)
 
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = AgentRuntime()
     yield runtime
@@ -433,7 +433,7 @@ async def test_e2e_recover_stuck_issue_on_restart(initialized_db, tmp_path, monk
     - Stuck issues → waiting_human
     - Execution log records the interruption
     """
-    from mango.config import get_settings
+    from agent.config import get_settings
 
     settings = get_settings()
     repo_dir = tmp_path / "repo"
@@ -447,9 +447,9 @@ async def test_e2e_recover_stuck_issue_on_restart(initialized_db, tmp_path, monk
 
     object.__setattr__(settings.project, "workspace", str(repo_dir))
     object.__setattr__(settings.project, "default_branch", "main")
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     repo = IssueRepo()
     exec_repo = ExecutionRepo()
@@ -502,8 +502,8 @@ async def test_e2e_cancel_during_execution(initialized_db, tmp_path, monkeypatch
 
     Validates P1 #5: cancel works correctly during execution.
     """
-    from mango.agent.runtime import AgentRuntime as _Runtime
-    from mango.config import get_settings
+    from agent.agent.runtime import AgentRuntime as _Runtime
+    from agent.config import get_settings
 
     settings = get_settings()
     repo_dir = tmp_path / "repo"
@@ -520,9 +520,9 @@ async def test_e2e_cancel_during_execution(initialized_db, tmp_path, monkeypatch
     object.__setattr__(settings.agent, "max_turns", 3)
     object.__setattr__(settings.agent, "task_timeout", 60)
     object.__setattr__(settings.opencode, "timeout", 30)
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = _Runtime()
 
@@ -794,8 +794,8 @@ async def test_e2e_api_create_run_poll(e2e_git_repo, initialized_db, monkeypatch
     Tests the entire API surface as a real client would use it.
     """
     from httpx import ASGITransport, AsyncClient
-    from mango.config import get_settings
-    from mango.server.app import create_app
+    from agent.config import get_settings
+    from agent.server.app import create_app
 
     repo_path, created_branches = e2e_git_repo
     settings = get_settings()
@@ -808,9 +808,9 @@ async def test_e2e_api_create_run_poll(e2e_git_repo, initialized_db, monkeypatch
     object.__setattr__(settings.opencode, "command", "opencode")
     object.__setattr__(settings.opencode, "timeout", 120)
 
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     app = create_app()
     # Manually set up runtime since lifespan won't run in test
@@ -883,8 +883,8 @@ async def test_e2e_no_changes_no_push(initialized_db, tmp_path, monkeypatch):
 
     Validates P0 #3: empty commit detection.
     """
-    from mango.agent.opencode_client import OpenCodeClient
-    from mango.config import get_settings
+    from agent.agent.opencode_client import OpenCodeClient
+    from agent.config import get_settings
 
     settings = get_settings()
     repo_dir = tmp_path / "repo"
@@ -903,9 +903,9 @@ async def test_e2e_no_changes_no_push(initialized_db, tmp_path, monkeypatch):
     object.__setattr__(settings.agent, "max_turns", 1)
     object.__setattr__(settings.agent, "task_timeout", 30)
     object.__setattr__(settings.opencode, "timeout", 10)
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = AgentRuntime()
 
@@ -1012,8 +1012,8 @@ async def test_e2e_git_push_failure_to_waiting_human(initialized_db, tmp_path, m
     Validates the _run_task push-failure branch: committed but push fails
     → waiting_human, no pr_url.
     """
-    from mango.agent.runtime import AgentRuntime
-    from mango.config import get_settings
+    from agent.agent.runtime import AgentRuntime
+    from agent.config import get_settings
 
     settings = get_settings()
 
@@ -1043,9 +1043,9 @@ async def test_e2e_git_push_failure_to_waiting_human(initialized_db, tmp_path, m
     object.__setattr__(settings.agent, "max_turns", 1)
     object.__setattr__(settings.agent, "task_timeout", 30)
     object.__setattr__(settings.opencode, "timeout", 10)
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = AgentRuntime()
 
@@ -1173,7 +1173,7 @@ async def test_e2e_task_timeout_handling(mock_runtime):
 
     Validates the task-level timeout in _run_task.
     """
-    from mango.config import get_settings
+    from agent.config import get_settings
 
     repo_dir, runtime = mock_runtime
     settings = get_settings()
@@ -1267,8 +1267,8 @@ async def test_e2e_api_retry_endpoint(initialized_db, monkeypatch):
     from unittest.mock import AsyncMock as _AsyncMock
 
     from httpx import ASGITransport, AsyncClient
-    from mango.agent.runtime import AgentRuntime
-    from mango.server.app import create_app
+    from agent.agent.runtime import AgentRuntime
+    from agent.server.app import create_app
 
     app = create_app()
     runtime = AgentRuntime()
@@ -1512,7 +1512,7 @@ async def test_e2e_priority_ordering(initialized_db):
 
     Validates ROADMAP3 acceptance: Priority field works correctly.
     """
-    from mango.models import IssuePriority
+    from agent.models import IssuePriority
     repo = IssueRepo()
 
     high = await repo.create(IssueCreate(title="High priority task", priority=IssuePriority.high))
@@ -1539,7 +1539,7 @@ async def test_e2e_edit_and_delete_status_guards(initialized_db):
     - running status: NOT editable, NOT deletable
     - done status: deletable
     """
-    from mango.models import IssuePriority
+    from agent.models import IssuePriority
     repo = IssueRepo()
 
     # ── open status: editable ──

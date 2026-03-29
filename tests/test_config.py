@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mango.config import Settings
+from agent.config import Settings
 
 
 def test_default_config_loads():

@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from mango.cli.client import MangoClient
-from mango.cli.output import (
+from agent.cli.client import MangoClient
+from agent.cli.output import (
     bold,
     dim,
     green,
@@ -19,7 +19,7 @@ from mango.cli.output import (
     print_success,
     yellow,
 )
-from mango.cli.stream import consume_sse_stream
+from agent.cli.stream import consume_sse_stream
 
 
 def _make_client(args: argparse.Namespace) -> MangoClient:
@@ -32,14 +32,14 @@ def _make_client(args: argparse.Namespace) -> MangoClient:
 
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the Mango server."""
-    from mango.main import main as start_server
+    from agent.main import main as start_server
 
     if args.port:
         # Override port via environment so get_settings() picks it up
         import os
         os.environ["SERVER__PORT"] = str(args.port)
         # Clear the cached settings so the new port takes effect
-        from mango.config import get_settings
+        from agent.config import get_settings
         get_settings.cache_clear()
 
     start_server()

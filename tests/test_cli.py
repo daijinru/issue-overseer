@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mango.cli.parser import build_parser, _resolve_server_url
-from mango.cli.output import (
+from agent.cli.parser import build_parser, _resolve_server_url
+from agent.cli.output import (
     _strip_ansi,
     print_table,
     print_issues_table,
@@ -188,7 +188,7 @@ class TestResolveServerURL:
         ns = MagicMock()
         ns.server = None
         # Patch get_settings at source to fail so we hit the default
-        with patch("mango.config.get_settings", side_effect=Exception("no config")):
+        with patch("agent.config.get_settings", side_effect=Exception("no config")):
             url = _resolve_server_url(ns)
         assert url == "http://localhost:18800"
 

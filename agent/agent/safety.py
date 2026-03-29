@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
-from mango.config import SecurityConfig
+from agent.config import SecurityConfig
 
 _KNOWN_COMMANDS: set[str] = {
     "git", "python", "pytest", "pip", "uv",

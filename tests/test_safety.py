@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from mango.agent.safety import (
+from agent.agent.safety import (
     build_safety_prompt,
     extract_commands_from_result,
     validate_command,
 )
-from mango.config import SecurityConfig
+from agent.config import SecurityConfig
 
 
 def _default_config() -> SecurityConfig:

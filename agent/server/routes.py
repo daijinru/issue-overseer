@@ -6,13 +6,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from mango.db.connection import get_db_connection
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from mango.models import (
+from agent.db.connection import get_db_connection
+from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
+from agent.models import (
     Execution, ExecutionLog, ExecutionStep, Issue, IssueCreate, IssueRetry, IssueStatus,
     IssueUpdate, IssuePriority,
 )
-from mango.server.sse import sse_stream
+from agent.server.sse import sse_stream
 
 router = APIRouter(prefix="/api")
 

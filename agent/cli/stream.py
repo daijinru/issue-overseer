@@ -7,7 +7,7 @@ import sys
 
 import httpx
 
-from mango.cli.output import (
+from agent.cli.output import (
     blue,
     bold,
     dim,

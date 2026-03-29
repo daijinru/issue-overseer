@@ -10,17 +10,17 @@ import uuid
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
-from mango.agent.context import build_turn_context
-from mango.agent.opencode_client import OpenCodeClient
-from mango.agent.safety import extract_commands_from_result, validate_command
-from mango.config import get_settings
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from mango.models import ExecutionStatus, Issue, IssueStatus, LogLevel
-from mango.skills.base import GenericSkill
-from mango.skills.plan import PlanSkill, extract_spec_json, validate_spec
+from agent.agent.context import build_turn_context
+from agent.agent.opencode_client import OpenCodeClient
+from agent.agent.safety import extract_commands_from_result, validate_command
+from agent.config import get_settings
+from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
+from agent.models import ExecutionStatus, Issue, IssueStatus, LogLevel
+from agent.skills.base import GenericSkill
+from agent.skills.plan import PlanSkill, extract_spec_json, validate_spec
 
 if TYPE_CHECKING:
-    from mango.server.event_bus import EventBus
+    from agent.server.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 

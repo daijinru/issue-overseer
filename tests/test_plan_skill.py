@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mango.models import Issue, IssueStatus, IssuePriority, TurnContext
-from mango.skills.plan import (
+from agent.models import Issue, IssueStatus, IssuePriority, TurnContext
+from agent.skills.plan import (
     PlanSkill,
     extract_spec_json,
     validate_spec,

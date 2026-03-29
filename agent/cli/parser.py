@@ -6,8 +6,8 @@ import argparse
 import os
 import sys
 
-from mango import __version__
-from mango.cli.commands import (
+from agent import __version__
+from agent.cli.commands import (
     cmd_health,
     cmd_issue_cancel,
     cmd_issue_complete,
@@ -39,7 +39,7 @@ def _resolve_server_url(args: argparse.Namespace) -> str:
 
     # 3. Read from overseer.toml
     try:
-        from mango.config import get_settings
+        from agent.config import get_settings
         settings = get_settings()
         port = settings.server.port
         return f"http://localhost:{port}"

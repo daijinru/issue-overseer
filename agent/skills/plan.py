@@ -9,11 +9,11 @@ import re
 from abc import ABC
 from collections.abc import Callable
 
-from mango.agent.opencode_client import OpenCodeClient
-from mango.agent.safety import build_safety_prompt
-from mango.config import get_settings
-from mango.models import TurnContext
-from mango.skills.base import BaseSkill
+from agent.agent.opencode_client import OpenCodeClient
+from agent.agent.safety import build_safety_prompt
+from agent.config import get_settings
+from agent.models import TurnContext
+from agent.skills.base import BaseSkill
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from mango.cli.client import MangoClient, _extract_detail
+from agent.cli.client import MangoClient, _extract_detail
 
 
 # ── Fixtures ────────────────────────────────────────────────────────

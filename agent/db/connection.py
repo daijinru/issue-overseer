@@ -9,7 +9,7 @@ from typing import AsyncIterator
 
 import aiosqlite
 
-from mango.config import get_settings
+from agent.config import get_settings
 
 logger = logging.getLogger(__name__)
 

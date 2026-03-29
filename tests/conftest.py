@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mango.config import Settings, get_settings
-from mango.db.connection import init_db
-from mango.server.app import create_app
+from agent.config import Settings, get_settings
+from agent.db.connection import init_db
+from agent.server.app import create_app
 
 # Exclude fixture data directories from pytest collection
 collect_ignore_glob = [str(Path(__file__).parent / "fixtures" / "**")]
@@ -25,10 +25,10 @@ def tmp_settings(tmp_path, monkeypatch):
 
     # Clear the lru_cache so get_settings() returns our test settings
     get_settings.cache_clear()
-    monkeypatch.setattr("mango.config.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.db.connection.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.db.repos.get_db_connection", _make_get_db_connection(settings))
-    monkeypatch.setattr("mango.server.routes.get_db_connection", _make_get_db_connection(settings))
+    monkeypatch.setattr("agent.config.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.db.connection.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.db.repos.get_db_connection", _make_get_db_connection(settings))
+    monkeypatch.setattr("agent.server.routes.get_db_connection", _make_get_db_connection(settings))
 
     yield settings
 
@@ -81,8 +81,8 @@ async def mock_runtime(initialized_db, tmp_path, monkeypatch):
 
     Yields ``(repo_dir, runtime)`` tuple.
     """
-    from mango.agent.runtime import AgentRuntime
-    from mango.config import get_settings as _get_settings
+    from agent.agent.runtime import AgentRuntime
+    from agent.config import get_settings as _get_settings
 
     settings = _get_settings()
 
@@ -129,9 +129,9 @@ async def mock_runtime(initialized_db, tmp_path, monkeypatch):
     object.__setattr__(settings.agent, "task_timeout", 60)
     object.__setattr__(settings.opencode, "timeout", 30)
 
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = AgentRuntime()
 

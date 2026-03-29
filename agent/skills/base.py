@@ -6,10 +6,10 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from mango.agent.opencode_client import OpenCodeClient
-from mango.agent.safety import build_safety_prompt
-from mango.config import get_settings
-from mango.models import TurnContext
+from agent.agent.opencode_client import OpenCodeClient
+from agent.agent.safety import build_safety_prompt
+from agent.config import get_settings
+from agent.models import TurnContext
 
 
 class BaseSkill(ABC):

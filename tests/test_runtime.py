@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mango.agent.runtime import AgentRuntime
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
-from mango.models import ExecutionStatus, IssueCreate, IssueStatus
+from agent.agent.runtime import AgentRuntime
+from agent.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
+from agent.models import ExecutionStatus, IssueCreate, IssueStatus
 
 
 class MockOpenCodeClient:
@@ -60,7 +60,7 @@ def tmp_git_repo(tmp_path):
 @pytest.fixture()
 async def mock_runtime(initialized_db, tmp_git_repo, monkeypatch):
     """AgentRuntime with mocked OpenCodeClient for testing."""
-    from mango.config import get_settings
+    from agent.config import get_settings
     settings = get_settings()
 
     # Use object.__setattr__ since pydantic models are frozen
@@ -72,9 +72,9 @@ async def mock_runtime(initialized_db, tmp_git_repo, monkeypatch):
     object.__setattr__(settings.agent, "task_timeout", 30)
     object.__setattr__(settings.opencode, "timeout", 10)
 
-    monkeypatch.setattr("mango.agent.runtime.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.agent.context.get_settings", lambda: settings)
-    monkeypatch.setattr("mango.skills.base.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
+    monkeypatch.setattr("agent.skills.base.get_settings", lambda: settings)
 
     runtime = AgentRuntime()
     return runtime
@@ -395,7 +395,7 @@ def test_resolve_workspace_prefers_child_over_distant_parent(mock_runtime, tmp_p
     fake_git.mkdir()  # empty .git dir — not a real repo
 
     # Issue workspace points to parent_dir (not the repo itself)
-    from mango.models import Issue, IssuePriority
+    from agent.models import Issue, IssuePriority
     issue = Issue(
         id="test-ws-id", title="Test", description="",
         status=IssueStatus.open, priority=IssuePriority.medium,
@@ -421,7 +421,7 @@ def test_resolve_workspace_exact_match(mock_runtime, tmp_path):
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True, check=True)
 
-    from mango.models import Issue, IssuePriority
+    from agent.models import Issue, IssuePriority
     issue = Issue(
         id="test-ws-exact", title="Test", description="",
         status=IssueStatus.open, priority=IssuePriority.medium,
@@ -462,7 +462,7 @@ async def test_cancelled_issue_can_rerun(mock_runtime, tmp_git_repo):
 @pytest.mark.asyncio
 async def test_run_attempt_emits_opencode_step_events(mock_runtime, tmp_git_repo):
     """Runtime should emit opencode_step events via EventBus when OpenCode streams events."""
-    from mango.server.event_bus import EventBus
+    from agent.server.event_bus import EventBus
 
     event_bus = EventBus()
     runtime = mock_runtime
@@ -636,7 +636,7 @@ async def test_plan_flow_cancel(mock_runtime):
 @pytest.mark.asyncio
 async def test_plan_flow_emits_events(mock_runtime):
     """Plan flow emits plan_start and plan_end events via EventBus."""
-    from mango.server.event_bus import EventBus
+    from agent.server.event_bus import EventBus
 
     event_bus = EventBus()
     runtime = mock_runtime
@@ -862,7 +862,7 @@ class LargeStderrMockClient:
 @pytest.mark.asyncio
 async def test_plan_flow_with_large_spec_truncated(mock_runtime):
     """Plan flow: oversized spec fields are truncated by validate_spec."""
-    from mango.skills.plan import _MAX_PLAN_CHARS, _MAX_SPEC_TOTAL_CHARS
+    from agent.skills.plan import _MAX_PLAN_CHARS, _MAX_SPEC_TOTAL_CHARS
 
     runtime = mock_runtime
     oversized_spec = json.dumps({
@@ -896,7 +896,7 @@ async def test_plan_flow_with_large_spec_truncated(mock_runtime):
     assert len(spec_data["plan"]) <= _MAX_PLAN_CHARS + len("…[truncated]")
     assert spec_data["plan"].endswith("…[truncated]")
     # criteria count should have been capped
-    from mango.skills.plan import _MAX_CRITERIA_COUNT
+    from agent.skills.plan import _MAX_CRITERIA_COUNT
     assert len(spec_data["acceptance_criteria"]) <= _MAX_CRITERIA_COUNT
     # total size should be within limit
     assert len(json.dumps(spec_data, ensure_ascii=False)) <= _MAX_SPEC_TOTAL_CHARS
@@ -965,7 +965,7 @@ async def test_plan_flow_realistic_issue_produces_valid_spec(mock_runtime):
     assert len(spec_data["files_to_modify"]) == 3
     assert spec_data["estimated_complexity"] == "medium"
     # Verify it's within total size limit
-    from mango.skills.plan import _MAX_SPEC_TOTAL_CHARS
+    from agent.skills.plan import _MAX_SPEC_TOTAL_CHARS
     assert len(json.dumps(spec_data, ensure_ascii=False)) <= _MAX_SPEC_TOTAL_CHARS
 
     # Execution record should have been created

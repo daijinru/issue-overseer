@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mango.config import get_settings
-from mango.models import Issue, TurnContext
+from agent.config import get_settings
+from agent.models import Issue, TurnContext
 
 
 def _truncate_by_lines(text: str | None, max_lines: int) -> str | None:

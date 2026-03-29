@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 
-from mango.server.event_bus import EventBus
+from agent.server.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 

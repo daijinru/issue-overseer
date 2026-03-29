@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from mango.server.event_bus import EventBus
+from agent.server.event_bus import EventBus
 
 
 @pytest.mark.asyncio

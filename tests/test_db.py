@@ -7,9 +7,9 @@ import uuid
 
 import pytest
 
-from mango.db.connection import init_db, get_db_connection
-from mango.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from mango.models import ExecutionStatus, IssueCreate, IssuePriority, IssueStatus, LogLevel
+from agent.db.connection import init_db, get_db_connection
+from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
+from agent.models import ExecutionStatus, IssueCreate, IssuePriority, IssueStatus, LogLevel
 
 
 @pytest.mark.asyncio

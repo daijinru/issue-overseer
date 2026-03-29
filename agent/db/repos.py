@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 
-from mango.db.connection import get_db_connection
-from mango.models import (
+from agent.db.connection import get_db_connection
+from agent.models import (
     Execution,
     ExecutionLog,
     ExecutionStatus,
