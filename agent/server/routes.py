@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import platform
-import subprocess
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agent.agent.cc_connect_client import CCConnectBridgeError
 from agent.db.connection import get_db_connection
-from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from agent.models import (
-    Execution, ExecutionLog, ExecutionStep, Issue, IssueCreate, IssueStatus,
-)
+from agent.db.repos import IssueRepo
+from agent.models import Issue, IssueCreate, IssueStatus
 from agent.server.sse import sse_stream
 
 router = APIRouter(prefix="/api")
@@ -29,40 +24,6 @@ class HealthResponse(BaseModel):
     version: str
 
 
-class WorkspaceSelection(BaseModel):
-    workspace: str | None
-
-
-def select_workspace() -> str | None:
-    """Open the local operating system's directory picker."""
-    if platform.system() != "Darwin":
-        raise RuntimeError("当前系统暂不支持原生目录选择")
-
-    try:
-        result = subprocess.run(
-            [
-                "osascript",
-                "-e",
-                "POSIX path of (choose folder with prompt \"选择 Issue 工作目录\")",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("选择目录超时，请重试") from exc
-    except OSError as exc:
-        raise RuntimeError("本机无法打开目录选择窗口") from exc
-
-    if result.returncode != 0:
-        if "User canceled" in result.stderr or "-128" in result.stderr:
-            return None
-        raise RuntimeError("目录选择窗口未能完成")
-    selection = result.stdout.strip()
-    return str(Path(selection)) if selection else None
-
-
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     async with get_db_connection() as db:
@@ -70,12 +31,13 @@ async def health_check() -> HealthResponse:
     return HealthResponse(status="ok", version="0.1.0")
 
 
-@router.post("/workspaces/select", response_model=WorkspaceSelection)
-async def choose_workspace() -> WorkspaceSelection:
+@router.get("/cc-connect/projects")
+async def list_cc_connect_projects(request: Request):
     try:
-        return WorkspaceSelection(workspace=select_workspace())
-    except RuntimeError as exc:
+        projects = await _get_runtime(request).list_projects()
+    except CCConnectBridgeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"projects": [{"name": project.name} for project in projects]}
 
 
 @router.post("/issues", response_model=Issue, status_code=201)
@@ -138,36 +100,6 @@ async def delete_issue(issue_id: str):
             detail="A running Issue cannot be deleted",
         )
     await repo.delete(issue_id)
-
-
-@router.get("/issues/{issue_id}/logs", response_model=list[ExecutionLog])
-async def get_issue_logs(issue_id: str):
-    repo = IssueRepo()
-    issue = await repo.get(issue_id)
-    if issue is None:
-        raise HTTPException(status_code=404, detail="Issue not found")
-    log_repo = ExecutionLogRepo()
-    return await log_repo.list_by_issue(issue_id)
-
-
-@router.get("/issues/{issue_id}/steps", response_model=list[ExecutionStep])
-async def get_issue_steps(issue_id: str):
-    repo = IssueRepo()
-    issue = await repo.get(issue_id)
-    if issue is None:
-        raise HTTPException(status_code=404, detail="Issue not found")
-    step_repo = ExecutionStepRepo()
-    return await step_repo.list_by_issue(issue_id)
-
-
-@router.get("/issues/{issue_id}/executions", response_model=list[Execution])
-async def get_issue_executions(issue_id: str):
-    repo = IssueRepo()
-    issue = await repo.get(issue_id)
-    if issue is None:
-        raise HTTPException(status_code=404, detail="Issue not found")
-    exec_repo = ExecutionRepo()
-    return await exec_repo.list_by_issue(issue_id)
 
 
 @router.get("/issues/{issue_id}/stream")

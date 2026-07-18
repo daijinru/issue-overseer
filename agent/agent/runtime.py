@@ -5,23 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from agent.agent.cc_connect_client import CCConnectClient
+from agent.agent.cc_connect_client import CCConnectBridgeError, CCConnectClient, ProjectInfo
 from agent.config import get_settings
-from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from agent.models import ExecutionStatus, IssueOutcome, IssueStatus, LogLevel
+from agent.db.repos import IssueRepo
+from agent.models import IssueOutcome, IssueStatus
 
 logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
-    """Own Issue lifecycle state while Bridge execution is integrated separately."""
+    """Own Issue lifecycle state and delegate each task to cc-connect."""
 
     def __init__(self, event_bus=None) -> None:
         self.settings = get_settings()
         self.issue_repo = IssueRepo()
-        self.exec_repo = ExecutionRepo()
-        self.log_repo = ExecutionLogRepo()
-        self.step_repo = ExecutionStepRepo()
         self.client = CCConnectClient(
             url=self.settings.cc_connect.url,
             token=self.settings.cc_connect.token,
@@ -36,32 +33,16 @@ class AgentRuntime:
         if self._event_bus is not None:
             self._event_bus.publish(issue_id, event_type, data)
 
-    async def _log(
-        self, issue_id: str, execution_id: str, level: LogLevel, message: str,
-    ) -> None:
-        await self.log_repo.append(execution_id, level, message)
-        self._emit(issue_id, "execution_log", {
-            "execution_id": execution_id,
-            "level": level.value,
-            "message": message,
-        })
-
     async def recover_from_restart(self) -> None:
         """Finish any interrupted running Issues with an error outcome."""
         for issue in await self.issue_repo.list_all(status=IssueStatus.running):
             reason = "服务重启，执行中断"
             logger.warning("Recovering interrupted Issue %s", issue.id)
             await self.issue_repo.finish(issue.id, IssueOutcome.error, None, reason)
-            executions = await self.exec_repo.list_by_issue(issue.id)
-            if executions:
-                latest = executions[-1]
-                if latest.status is ExecutionStatus.running:
-                    await self.exec_repo.finish(
-                        latest.id,
-                        status=ExecutionStatus.failed,
-                        error_message=reason,
-                    )
-                await self._log(issue.id, latest.id, LogLevel.warn, reason)
+
+    async def list_projects(self) -> list[ProjectInfo]:
+        """Return the projects currently advertised by cc-connect."""
+        return await self.client.list_projects()
 
     async def start_task(self, issue_id: str) -> None:
         """Atomically claim a pending Issue and schedule its execution."""
@@ -87,20 +68,32 @@ class AgentRuntime:
     def is_running(self, issue_id: str) -> bool:
         return issue_id in self._running_tasks
 
+    async def wait_for_task(self, issue_id: str) -> None:
+        """Wait for an in-process task; used by callers that need its result."""
+        task = self._running_tasks.get(issue_id)
+        if task is not None:
+            await task
+
     def _cleanup(self, issue_id: str) -> None:
         self._cancel_tokens.pop(issue_id, None)
         self._running_tasks.pop(issue_id, None)
 
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
-        """Record a terminal result until Task 3 supplies Bridge execution."""
+        """Run one Issue against its selected cc-connect project."""
         if cancel_event.is_set():
-            message = "任务已取消"
-        else:
-            message = "Issue execution will be dispatched through cc-connect Bridge."
+            await self.issue_repo.finish(issue_id, IssueOutcome.error, None, "任务已取消")
+            self._emit(issue_id, "task_end", {"success": False, "error": "任务已取消"})
+            return
 
-        await self.issue_repo.finish(issue_id, IssueOutcome.error, None, message)
-        self._emit(issue_id, "task_end", {
-            "issue_id": issue_id,
-            "success": False,
-            "error_message": message,
-        })
+        issue = await self.issue_repo.get(issue_id)
+        if issue is None:
+            return
+        self._emit(issue_id, "task_start", {"issue_id": issue_id})
+        try:
+            result = await self.client.run_task(issue.project, issue.content, issue.id)
+        except CCConnectBridgeError as exc:
+            await self.issue_repo.finish(issue_id, IssueOutcome.error, None, str(exc))
+            self._emit(issue_id, "task_end", {"success": False, "error": str(exc)})
+        else:
+            await self.issue_repo.finish(issue_id, IssueOutcome.success, result, None)
+            self._emit(issue_id, "task_end", {"success": True})

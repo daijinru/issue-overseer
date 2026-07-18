@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from agent.db.repos import IssueRepo
+from agent.agent.cc_connect_client import CCConnectBridgeError, ProjectInfo
 from agent.models import IssueCreate, IssueOutcome, IssueStatus
 from agent.server.app import create_app
 
@@ -21,6 +22,7 @@ async def api_client(initialized_db):
         runtime.start_task = AsyncMock()
         runtime.cancel_task = AsyncMock(return_value=True)
         runtime.is_running = MagicMock(return_value=False)
+        runtime.list_projects = AsyncMock(return_value=[])
         app.state.runtime = runtime
         yield client
 
@@ -67,6 +69,30 @@ async def test_run_issue_starts_pending_issue(api_client):
 
     assert response.status_code == 202
     api_client._transport.app.state.runtime.start_task.assert_awaited_once_with(issue_id)
+
+
+@pytest.mark.asyncio
+async def test_list_projects_returns_bridge_projects(api_client):
+    api_client._transport.app.state.runtime.list_projects = AsyncMock(
+        return_value=[ProjectInfo(name="api")]
+    )
+
+    response = await api_client.get("/api/cc-connect/projects")
+
+    assert response.status_code == 200
+    assert response.json() == {"projects": [{"name": "api"}]}
+
+
+@pytest.mark.asyncio
+async def test_list_projects_returns_service_unavailable_when_bridge_is_offline(api_client):
+    api_client._transport.app.state.runtime.list_projects = AsyncMock(
+        side_effect=CCConnectBridgeError("offline")
+    )
+
+    response = await api_client.get("/api/cc-connect/projects")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "offline"
 
 
 @pytest.mark.asyncio
