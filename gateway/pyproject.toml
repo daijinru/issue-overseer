@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "httpx>=0.28",
+    "websockets>=16.0",
 ]
 
 [project.optional-dependencies]

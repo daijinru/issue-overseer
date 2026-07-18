@@ -12,6 +12,7 @@ from mango_gateway.models import (
     SessionCreate,
     SessionStatus,
 )
+from mango_gateway.service.cc_connect_client import CCConnectBridgeError
 from mango_gateway.service.gateway import GatewayService
 
 
@@ -178,6 +179,54 @@ class TestMessageHistory:
         assert messages[0].role == MessageRole.user
         assert messages[0].content == "帮我写代码"
         assert messages[1].role == MessageRole.assistant
+
+
+class TestCCConnectMessage:
+    async def test_persists_request_and_bridge_reply(
+        self, gateway_service: GatewayService
+    ):
+        bridge = AsyncMock()
+        bridge.send.return_value = "任务完成"
+        gateway_service.cc_connect = bridge
+
+        reply = await gateway_service.send_cc_connect_message(
+            GatewayMessageSend(content="实现 hello world", source="web")
+        )
+
+        assert reply.result == "任务完成"
+        bridge.send.assert_awaited_once()
+        session_key, content, timeout = bridge.send.await_args.args
+        assert session_key.startswith("issue-overseer:")
+        assert content == "实现 hello world"
+        assert timeout == 1800
+
+        messages = await gateway_service.get_session_messages(reply.session_id)
+        assert [(message.role, message.content) for message in messages] == [
+            (MessageRole.user, "实现 hello world"),
+            (MessageRole.assistant, "任务完成"),
+        ]
+
+    async def test_keeps_only_user_message_when_bridge_fails(
+        self, gateway_service: GatewayService
+    ):
+        bridge = AsyncMock()
+        bridge.send.side_effect = CCConnectBridgeError("bridge unavailable")
+        gateway_service.cc_connect = bridge
+        session = await gateway_service.create_session(
+            SessionCreate(source="api", source_id="failure-case")
+        )
+
+        with pytest.raises(CCConnectBridgeError, match="bridge unavailable"):
+            await gateway_service.send_cc_connect_message(
+                GatewayMessageSend(
+                    content="实现 hello world", session_id=session.id
+                )
+            )
+
+        messages = await gateway_service.get_session_messages(session.id)
+        assert [(message.role, message.content) for message in messages] == [
+            (MessageRole.user, "实现 hello world"),
+        ]
 
 
 class TestFormatReply:

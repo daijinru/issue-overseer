@@ -9,12 +9,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mango_gateway.models import (
+    CCConnectReply,
     GatewayMessageSend,
     GatewayReply,
     Message,
     Session,
     SessionCreate,
 )
+from mango_gateway.service.cc_connect_client import CCConnectBridgeError
 
 router = APIRouter(prefix="/api")
 
@@ -151,3 +153,15 @@ async def send_message(data: GatewayMessageSend, request: Request):
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/gateway/cc-connect/messages", response_model=CCConnectReply)
+async def send_cc_connect_message(data: GatewayMessageSend, request: Request):
+    """Send a minimal task through the configured cc-connect Bridge."""
+    gateway = _get_gateway(request)
+    try:
+        return await gateway.send_cc_connect_message(data)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except CCConnectBridgeError as e:
+        raise HTTPException(status_code=502, detail=str(e))

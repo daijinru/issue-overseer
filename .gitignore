@@ -2,6 +2,9 @@
 data/*.db
 data/*.db-shm
 data/*.db-wal
+gateway/data/*.db
+gateway/data/*.db-shm
+gateway/data/*.db-wal
 
 # Python
 __pycache__/

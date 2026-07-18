@@ -76,3 +76,9 @@ class GatewayReply(BaseModel):
     result: str | None = None
     pr_url: str | None = None
     failure_reason: str | None = None
+
+
+class CCConnectReply(BaseModel):
+    session_id: str
+    message_id: int
+    result: str

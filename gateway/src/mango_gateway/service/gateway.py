@@ -8,6 +8,7 @@ import logging
 from mango_gateway.config import Settings
 from mango_gateway.db.repos import MessageRepo, SessionRepo
 from mango_gateway.models import (
+    CCConnectReply,
     GatewayMessageSend,
     GatewayReply,
     MessageRole,
@@ -17,6 +18,7 @@ from mango_gateway.models import (
     Message,
 )
 from mango_gateway.service.runtime_client import RuntimeClient
+from mango_gateway.service.cc_connect_client import CCConnectBridgeClient, CCConnectBridgeError
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +30,14 @@ class GatewayService:
     AgentRuntime — Gateway only translates between messages and Issues.
     """
 
-    def __init__(self, runtime_client: RuntimeClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        runtime_client: RuntimeClient,
+        settings: Settings,
+        cc_connect_client: CCConnectBridgeClient | None = None,
+    ) -> None:
         self.runtime = runtime_client
+        self.cc_connect = cc_connect_client
         self.settings = settings
         self.session_repo = SessionRepo()
         self.message_repo = MessageRepo()
@@ -131,6 +139,32 @@ class GatewayService:
     async def get_session_messages(self, session_id: str) -> list[Message]:
         """Get all messages in a session."""
         return await self.message_repo.list_by_session(session_id)
+
+    async def send_cc_connect_message(
+        self, data: GatewayMessageSend
+    ) -> CCConnectReply:
+        """Submit one minimal task through cc-connect and persist its reply."""
+        session = await self._resolve_session(data)
+        await self.message_repo.create(
+            session_id=session.id,
+            role=MessageRole.user,
+            content=data.content,
+        )
+        if self.cc_connect is None:
+            raise CCConnectBridgeError("cc-connect Bridge is not configured")
+
+        session_key = f"{self.settings.cc_connect.platform}:{session.id}:user"
+        result = await self.cc_connect.send(session_key, data.content, data.timeout)
+        assistant_message = await self.message_repo.create(
+            session_id=session.id,
+            role=MessageRole.assistant,
+            content=result,
+        )
+        return CCConnectReply(
+            session_id=session.id,
+            message_id=assistant_message.id,
+            result=result,
+        )
 
     # ── Internal helpers ─────────────────────────────────────────────
 

@@ -31,6 +31,13 @@ class GatewayConfig(BaseModel):
     max_wait_timeout: int = 1800
 
 
+class CCConnectConfig(BaseModel):
+    url: str = "ws://localhost:9810/bridge/ws"
+    token: str = ""
+    platform: str = "issue-overseer"
+    timeout: int = 1800
+
+
 class DatabaseConfig(BaseModel):
     path: str = "./data/gateway.db"
 
@@ -45,6 +52,7 @@ class Settings(BaseSettings):
     runtime: RuntimeConfig = RuntimeConfig()
     session: SessionConfig = SessionConfig()
     gateway: GatewayConfig = GatewayConfig()
+    cc_connect: CCConnectConfig = CCConnectConfig()
     database: DatabaseConfig = DatabaseConfig()
 
     @classmethod

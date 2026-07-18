@@ -14,6 +14,7 @@ from mango_gateway.config import get_settings
 from mango_gateway.db.connection import close_shared_connection, init_db
 from mango_gateway.server.routes import router
 from mango_gateway.service.gateway import GatewayService
+from mango_gateway.service.cc_connect_client import CCConnectBridgeClient
 from mango_gateway.service.runtime_client import RuntimeClient
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.runtime_client = runtime_client
 
+    cc_connect_client = CCConnectBridgeClient(
+        url=settings.cc_connect.url,
+        token=settings.cc_connect.token,
+        platform=settings.cc_connect.platform,
+        timeout=settings.cc_connect.timeout,
+    )
+    app.state.cc_connect_client = cc_connect_client
+
     # Create GatewayService
     gateway = GatewayService(
         runtime_client=runtime_client,
         settings=settings,
+        cc_connect_client=cc_connect_client,
     )
     app.state.gateway = gateway
 

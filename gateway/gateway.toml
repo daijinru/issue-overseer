@@ -13,5 +13,11 @@ cleanup_interval_minutes = 60
 [gateway]
 max_wait_timeout = 1800
 
+[cc_connect]
+url = "ws://localhost:9810/bridge/ws"
+token = ""
+platform = "issue-overseer"
+timeout = 1800
+
 [database]
 path = "./data/gateway.db"
