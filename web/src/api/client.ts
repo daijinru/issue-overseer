@@ -36,6 +36,12 @@ export function createIssue(data: IssueCreateRequest) {
   });
 }
 
+export function selectWorkspace() {
+  return request<{ workspace: string | null }>('/api/workspaces/select', {
+    method: 'POST',
+  });
+}
+
 export function listIssues(status?: IssueStatus) {
   const params = status ? `?status=${status}` : '';
   return request<Issue[]>(`/api/issues${params}`);

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from agent.agent.context import build_turn_context
-from agent.agent.opencode_client import OpenCodeClient
+from agent.agent.cc_connect_client import CCConnectClient
 from agent.agent.safety import extract_commands_from_result, validate_command
 from agent.config import get_settings
 from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
@@ -32,9 +32,11 @@ class AgentRuntime:
         self.exec_repo = ExecutionRepo()
         self.log_repo = ExecutionLogRepo()
         self.step_repo = ExecutionStepRepo()
-        self.client = OpenCodeClient(
-            command=self.settings.opencode.command,
-            timeout=self.settings.opencode.timeout,
+        self.client = CCConnectClient(
+            url=self.settings.cc_connect.url,
+            token=self.settings.cc_connect.token,
+            platform=self.settings.cc_connect.platform,
+            timeout=self.settings.cc_connect.timeout,
         )
         self.skill = GenericSkill(self.client)
         self.plan_skill = PlanSkill(self.client)
@@ -125,8 +127,8 @@ class AgentRuntime:
         Retry strategy: on JSON extraction failure OR timeout, retry once with
         a stricter prompt. If retry also fails → waiting_human.
 
-        Uses ``agent.plan_timeout`` (default 600s) instead of
-        ``opencode.timeout`` — plan generation needs more time because it
+        Uses ``agent.plan_timeout`` (default 600s) instead of the normal
+        cc-connect timeout — plan generation needs more time because it
         reads the whole codebase before producing a spec.
         """
         issue = await self.issue_repo.get(issue_id)
@@ -186,16 +188,16 @@ class AgentRuntime:
                     context_snapshot=_context_to_dict(ctx), git_diff_snapshot=None,
                 )
 
-                # Bridge OpenCode streaming events to the EventBus
-                def on_opencode_event(event: dict) -> None:
-                    self._emit(issue_id, "opencode_step", event)
+                # Bridge cc-connect progress events to the EventBus.
+                def on_agent_event(event: dict) -> None:
+                    self._emit(issue_id, "agent_step", event)
                     asyncio.create_task(self._persist_step(execution_id, event))
 
                 try:
                     async with asyncio.timeout(plan_timeout):
                         raw_output = await self.plan_skill.client.run_prompt(
                             prompt, cwd=workspace,
-                            cancel_event=cancel_event, on_event=on_opencode_event,
+                            cancel_event=cancel_event, on_event=on_agent_event,
                         )
                     await self.exec_repo.finish(
                         execution_id, status=ExecutionStatus.completed, result=raw_output,
@@ -536,18 +538,18 @@ class AgentRuntime:
         issue_id = ctx.issue.id
         self._emit(issue_id, "attempt_start", {"execution_id": execution_id})
         start = time.monotonic()
-        attempt_timeout = self.settings.opencode.timeout
+        attempt_timeout = self.settings.cc_connect.timeout
 
-        # Bridge OpenCode streaming events to the EventBus
-        def on_opencode_event(event: dict) -> None:
-            self._emit(issue_id, "opencode_step", event)
+        # Bridge cc-connect progress events to the EventBus.
+        def on_agent_event(event: dict) -> None:
+            self._emit(issue_id, "agent_step", event)
             asyncio.create_task(self._persist_step(execution_id, event))
 
         try:
             async with asyncio.timeout(attempt_timeout):
                 result_text = await self.skill.execute(
                     ctx, cwd, cancel_event=cancel_event,
-                    on_event=on_opencode_event,
+                    on_event=on_agent_event,
                 )
             duration_ms = int((time.monotonic() - start) * 1000)
             await self._audit_commands(issue_id, execution_id, result_text)
@@ -590,7 +592,7 @@ class AgentRuntime:
             await self._log(issue_id, execution_id, level, f"{prefix}: {cmd}")
 
     async def _persist_step(self, execution_id: str, event: dict) -> None:
-        """Persist an OpenCode step event to the database (fire-and-forget)."""
+        """Persist an agent progress event to the database (fire-and-forget)."""
         try:
             await self.step_repo.create(
                 execution_id=execution_id,

@@ -28,6 +28,10 @@ class IssuePriority(str, Enum):
     low = "low"
 
 
+class AgentType(str, Enum):
+    wiscode = "wiscode"
+
+
 class ExecutionStatus(str, Enum):
     running = "running"
     completed = "completed"
@@ -59,6 +63,7 @@ class Issue(BaseModel):
     updated_at: str | None = None
     priority: IssuePriority = IssuePriority.medium
     spec: str | None = None
+    agent: AgentType = AgentType.wiscode
 
 
 class Execution(BaseModel):
@@ -109,6 +114,7 @@ class IssueCreate(BaseModel):
     description: str = ""
     workspace: str | None = None
     priority: IssuePriority = IssuePriority.medium
+    agent: AgentType = AgentType.wiscode
 
 
 class IssueRetry(BaseModel):

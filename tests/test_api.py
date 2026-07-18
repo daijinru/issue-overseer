@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from agent.db.repos import IssueRepo
 from agent.models import IssueCreate, IssueStatus
 from agent.server.app import create_app
+from agent.server import routes
 
 
 @pytest.fixture()
@@ -38,6 +40,62 @@ async def test_create_issue(api_client):
     data = resp.json()
     assert data["title"] == "Test"
     assert data["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_create_issue_persists_selected_agent(api_client):
+    resp = await api_client.post(
+        "/api/issues", json={"title": "Use WisCode", "agent": "wiscode"}
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["agent"] == "wiscode"
+
+
+@pytest.mark.asyncio
+async def test_select_workspace_uses_local_system_picker(api_client, monkeypatch):
+    monkeypatch.setattr(
+        "agent.server.routes.select_workspace", lambda: "/Users/test/project"
+    )
+
+    resp = await api_client.post("/api/workspaces/select")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"workspace": "/Users/test/project"}
+
+
+def test_select_workspace_uses_macos_finder_dialog(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        args=["osascript"], returncode=0, stdout="/Users/test/project/\n", stderr=""
+    )
+    run = MagicMock(return_value=completed)
+    monkeypatch.setattr(routes.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(routes.subprocess, "run", run)
+
+    assert routes.select_workspace() == "/Users/test/project"
+    run.assert_called_once_with(
+        [
+            "osascript",
+            "-e",
+            "POSIX path of (choose folder with prompt \"选择 Issue 工作目录\")",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_select_workspace_reports_timeout(monkeypatch):
+    monkeypatch.setattr(routes.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        routes.subprocess,
+        "run",
+        MagicMock(side_effect=subprocess.TimeoutExpired("osascript", 120)),
+    )
+
+    with pytest.raises(RuntimeError, match="选择目录超时"):
+        routes.select_workspace()
 
 
 @pytest.mark.asyncio

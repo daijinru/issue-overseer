@@ -6,9 +6,10 @@ max_turns = 3
 task_timeout = 1800
 plan_timeout = 600
 
-[opencode]
-command = "opencode"
-timeout = 300
+[cc_connect]
+url = "ws://localhost:9810/bridge/ws"
+platform = "issue-overseer"
+timeout = 1800
 
 [project]
 workspace = "."

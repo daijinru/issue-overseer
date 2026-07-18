@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from typing import Any, Tuple, Type
@@ -23,7 +24,18 @@ class AgentConfig(BaseModel):
     plan_timeout: int = 600  # 10 minutes — plan generation needs more time than execution
 
 
+class CCConnectConfig(BaseModel):
+    """Connection details for cc-connect's Bridge WebSocket endpoint."""
+
+    url: str = "ws://localhost:9810/bridge/ws"
+    token: str = os.environ.get("CC_CONNECT_BRIDGE_TOKEN", "")
+    platform: str = "issue-overseer"
+    timeout: int = 1800
+
+
 class OpenCodeConfig(BaseModel):
+    """Legacy compatibility settings. The Issue runtime no longer uses them."""
+
     command: str = "opencode"
     timeout: int = 300
 
@@ -68,6 +80,7 @@ class Settings(BaseSettings):
 
     server: ServerConfig = ServerConfig()
     agent: AgentConfig = AgentConfig()
+    cc_connect: CCConnectConfig = CCConnectConfig()
     opencode: OpenCodeConfig = OpenCodeConfig()
     project: ProjectConfig = ProjectConfig()
     database: DatabaseConfig = DatabaseConfig()

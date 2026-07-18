@@ -18,7 +18,7 @@ const REFRESH_EVENTS: SSEEventType[] = [
 ];
 
 /** All SSE event types we listen to — refresh events + streaming events. */
-const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'opencode_step', 'execution_log'];
+const ALL_SSE_EVENTS: SSEEventType[] = [...REFRESH_EVENTS, 'agent_step', 'execution_log'];
 
 /**
  * Convert persisted ExecutionStep[] to the OpenCodeStep[] format used by the UI.
@@ -130,7 +130,7 @@ export function useIssueDetail(issueId: string | null) {
     // Register a handler per event type.
     for (const eventType of ALL_SSE_EVENTS) {
       es.addEventListener(eventType, (evt) => {
-        if (eventType === 'opencode_step') {
+        if (eventType === 'agent_step') {
           // Append new step from SSE. Each step is also being persisted to DB
           // by the backend, so the next fetchDetail() will include it in the
           // REST baseline. We append here for immediate visibility.

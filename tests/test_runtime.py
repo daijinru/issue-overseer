@@ -14,6 +14,30 @@ from agent.db.repos import ExecutionLogRepo, ExecutionRepo, IssueRepo
 from agent.models import ExecutionStatus, IssueCreate, IssueStatus
 
 
+def test_runtime_uses_cc_connect_client_for_wiscode(initialized_db, monkeypatch):
+    """WisCode issues must be dispatched through cc-connect, never OpenCode."""
+    import agent.agent.runtime as runtime_module
+
+    created: list[object] = []
+
+    class FakeCCConnectClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        async def run_prompt(self, *args, **kwargs):
+            return ""
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(runtime_module, "CCConnectClient", FakeCCConnectClient, raising=False)
+
+    runtime = AgentRuntime()
+
+    assert runtime.client.__class__ is FakeCCConnectClient
+    assert created
+
+
 class MockOpenCodeClient:
     """Replaces OpenCodeClient for testing without a real opencode binary."""
 
@@ -70,7 +94,7 @@ async def mock_runtime(initialized_db, tmp_git_repo, monkeypatch):
     object.__setattr__(settings.project, "pr_base", "main")
     object.__setattr__(settings.agent, "max_turns", 3)
     object.__setattr__(settings.agent, "task_timeout", 30)
-    object.__setattr__(settings.opencode, "timeout", 10)
+    object.__setattr__(settings.cc_connect, "timeout", 10)
 
     monkeypatch.setattr("agent.agent.runtime.get_settings", lambda: settings)
     monkeypatch.setattr("agent.agent.context.get_settings", lambda: settings)
@@ -273,7 +297,7 @@ async def test_run_task_creates_execution_records(mock_runtime, tmp_git_repo):
 async def test_run_task_timeout(mock_runtime):
     runtime = mock_runtime
     # Set very short timeout
-    object.__setattr__(runtime.settings.opencode, "timeout", 0.1)
+    object.__setattr__(runtime.settings.cc_connect, "timeout", 0.1)
 
     async def slow_run(*args, **kwargs):
         await asyncio.sleep(10)

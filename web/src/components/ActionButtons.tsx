@@ -7,7 +7,6 @@ import {
   UndoOutlined,
   ReloadOutlined,
   DeleteOutlined,
-  EditOutlined,
 } from '@ant-design/icons';
 import {
   runIssue,

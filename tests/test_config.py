@@ -11,8 +11,8 @@ def test_default_config_loads():
     assert settings.server.port == 18800
     assert settings.agent.max_turns == 3
     assert settings.agent.task_timeout == 1800
-    assert settings.opencode.command == "opencode"
-    assert settings.opencode.timeout == 300
+    assert settings.cc_connect.url == "ws://localhost:9810/bridge/ws"
+    assert settings.cc_connect.timeout == 1800
     assert settings.project.default_branch == "main"
     assert settings.database.path == "./data/mango.db"
     assert settings.context.max_git_diff_lines == 2000

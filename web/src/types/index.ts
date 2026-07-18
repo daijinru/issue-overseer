@@ -12,6 +12,8 @@ export type IssueStatus =
 // Issue priority — mirrors backend IssuePriority enum
 export type IssuePriority = 'high' | 'medium' | 'low';
 
+export type AgentType = 'wiscode';
+
 // Execution statuses — mirrors backend ExecutionStatus enum
 export type ExecutionStatus =
   | 'running'
@@ -36,6 +38,7 @@ export interface Issue {
   pr_url: string | null;
   priority: IssuePriority;
   spec: string | null;
+  agent: AgentType;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +86,7 @@ export interface IssueCreateRequest {
   description?: string;
   workspace?: string;
   priority?: IssuePriority;
+  agent: AgentType;
 }
 
 export interface IssueRetryRequest {
@@ -111,7 +115,7 @@ export type SSEEventType =
   | 'task_cancelled'
   | 'plan_start'
   | 'plan_end'
-  | 'opencode_step'
+  | 'agent_step'
   | 'execution_log';
 
 export interface SSEEvent {

@@ -6,7 +6,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from agent.agent.opencode_client import OpenCodeClient
+from agent.agent.cc_connect_client import CCConnectClient
 from agent.agent.safety import build_safety_prompt
 from agent.config import get_settings
 from agent.models import TurnContext
@@ -21,7 +21,7 @@ class BaseSkill(ABC):
 
 
 class GenericSkill(BaseSkill):
-    def __init__(self, client: OpenCodeClient) -> None:
+    def __init__(self, client: CCConnectClient) -> None:
         self.client = client
 
     async def execute(self, ctx: TurnContext, cwd: str, *,

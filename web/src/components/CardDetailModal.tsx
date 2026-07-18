@@ -18,7 +18,6 @@ import { ExecutionTimeline } from './ExecutionTimeline';
 import { LogViewer } from './LogViewer';
 import { StepList } from './StepList';
 import { getColumnForIssue } from '../utils/kanban';
-import { issueStatusLabel } from '../utils/status';
 import type { Issue, Execution, ExecutionLog, OpenCodeStep } from '../types';
 
 interface CardDetailModalProps {
