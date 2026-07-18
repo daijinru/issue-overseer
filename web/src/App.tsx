@@ -20,9 +20,6 @@ function App() {
 
   const {
     issue: detailedIssue,
-    executions,
-    logs,
-    steps,
     loading: detailLoading,
     refresh: refreshDetail,
   } = useIssueDetail(selectedIssue?.id ?? null);
@@ -65,9 +62,6 @@ function App() {
       <CardDetailModal
         open={!!selectedIssue}
         issue={detailedIssue}
-        executions={executions}
-        logs={logs}
-        steps={steps}
         loading={detailLoading}
         onClose={handleCloseDetail}
         onActionDone={handleActionDone}

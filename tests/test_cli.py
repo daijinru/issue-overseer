@@ -18,7 +18,7 @@ def test_create_accepts_content_and_project():
 def test_retired_cli_actions_are_not_registered():
     parser = build_parser()
 
-    for action in ("edit", "retry", "plan", "spec", "complete"):
+    for action in ("edit", "retry", "plan", "spec", "complete", "logs", "steps"):
         with pytest.raises(SystemExit):
             parser.parse_args(["issue", action, "issue-1"])
 

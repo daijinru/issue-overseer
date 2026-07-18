@@ -1,22 +1,11 @@
-"""Database repository classes for issues, executions, and logs."""
+"""Database repository for simplified Issues."""
 
 from __future__ import annotations
 
-import json
 import uuid
 
 from agent.db.connection import get_db_connection
-from agent.models import (
-    Execution,
-    ExecutionLog,
-    ExecutionStatus,
-    ExecutionStep,
-    Issue,
-    IssueCreate,
-    IssueOutcome,
-    IssueStatus,
-    LogLevel,
-)
+from agent.models import Issue, IssueCreate, IssueOutcome, IssueStatus
 
 
 class IssueRepo:
@@ -117,7 +106,7 @@ class IssueRepo:
             await db.commit()
 
     async def delete(self, issue_id: str) -> bool:
-        """Delete an issue and its associated executions/logs. Returns True if deleted."""
+        """Delete an Issue and its historical legacy rows. Returns True if deleted."""
         async with get_db_connection() as db:
             # Delete execution logs via join
             await db.execute(
@@ -143,116 +132,3 @@ class IssueRepo:
             )
             await db.commit()
             return cursor.rowcount > 0
-
-class ExecutionRepo:
-    """Repository for the ``executions`` table."""
-
-    async def create(self, *, execution_id: str, issue_id: str, turn_number: int,
-                     attempt_number: int, prompt: str | None = None,
-                     context_snapshot: dict | None = None,
-                     git_diff_snapshot: str | None = None) -> Execution:
-        ctx_json = json.dumps(context_snapshot) if context_snapshot else None
-        async with get_db_connection() as db:
-            await db.execute(
-                """INSERT INTO executions
-                   (id, issue_id, turn_number, attempt_number, prompt, context_snapshot, git_diff_snapshot)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (execution_id, issue_id, turn_number, attempt_number, prompt, ctx_json, git_diff_snapshot),
-            )
-            await db.commit()
-            cursor = await db.execute("SELECT * FROM executions WHERE id = ?", (execution_id,))
-            row = await cursor.fetchone()
-            return Execution(**dict(row))
-
-    async def finish(self, execution_id: str, *, status: ExecutionStatus,
-                     result: str | None = None, error_message: str | None = None,
-                     duration_ms: int | None = None) -> None:
-        async with get_db_connection() as db:
-            await db.execute(
-                """UPDATE executions SET status = ?, result = ?, error_message = ?,
-                       duration_ms = ?, finished_at = datetime('now') WHERE id = ?""",
-                (status.value, result, error_message, duration_ms, execution_id),
-            )
-            await db.commit()
-
-    async def list_by_issue(self, issue_id: str) -> list[Execution]:
-        async with get_db_connection() as db:
-            cursor = await db.execute(
-                "SELECT * FROM executions WHERE issue_id = ? ORDER BY started_at",
-                (issue_id,),
-            )
-            rows = await cursor.fetchall()
-            return [Execution(**dict(r)) for r in rows]
-
-
-class ExecutionLogRepo:
-    """Repository for the ``execution_logs`` table."""
-
-    async def append(self, execution_id: str, level: LogLevel, message: str) -> None:
-        async with get_db_connection() as db:
-            await db.execute(
-                "INSERT INTO execution_logs (execution_id, level, message) VALUES (?, ?, ?)",
-                (execution_id, level.value, message),
-            )
-            await db.commit()
-
-    async def list_by_execution(self, execution_id: str) -> list[ExecutionLog]:
-        async with get_db_connection() as db:
-            cursor = await db.execute(
-                "SELECT * FROM execution_logs WHERE execution_id = ? ORDER BY created_at",
-                (execution_id,),
-            )
-            rows = await cursor.fetchall()
-            return [ExecutionLog(**dict(r)) for r in rows]
-
-    async def list_by_issue(self, issue_id: str) -> list[ExecutionLog]:
-        async with get_db_connection() as db:
-            cursor = await db.execute(
-                """SELECT el.* FROM execution_logs el
-                   JOIN executions e ON el.execution_id = e.id
-                   WHERE e.issue_id = ?
-                   ORDER BY el.created_at""",
-                (issue_id,),
-            )
-            rows = await cursor.fetchall()
-            return [ExecutionLog(**dict(r)) for r in rows]
-
-
-class ExecutionStepRepo:
-    """Repository for the ``execution_steps`` table."""
-
-    async def create(
-        self,
-        execution_id: str,
-        step_type: str,
-        tool: str | None = None,
-        target: str | None = None,
-        summary: str | None = None,
-    ) -> None:
-        async with get_db_connection() as db:
-            await db.execute(
-                "INSERT INTO execution_steps (execution_id, step_type, tool, target, summary) VALUES (?, ?, ?, ?, ?)",
-                (execution_id, step_type, tool, target, summary),
-            )
-            await db.commit()
-
-    async def list_by_execution(self, execution_id: str) -> list[ExecutionStep]:
-        async with get_db_connection() as db:
-            cursor = await db.execute(
-                "SELECT * FROM execution_steps WHERE execution_id = ? ORDER BY id",
-                (execution_id,),
-            )
-            rows = await cursor.fetchall()
-            return [ExecutionStep(**dict(r)) for r in rows]
-
-    async def list_by_issue(self, issue_id: str) -> list[ExecutionStep]:
-        async with get_db_connection() as db:
-            cursor = await db.execute(
-                """SELECT es.* FROM execution_steps es
-                   JOIN executions e ON es.execution_id = e.id
-                   WHERE e.issue_id = ?
-                   ORDER BY es.id""",
-                (issue_id,),
-            )
-            rows = await cursor.fetchall()
-            return [ExecutionStep(**dict(r)) for r in rows]

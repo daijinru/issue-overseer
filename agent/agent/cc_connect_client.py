@@ -1,4 +1,4 @@
-"""cc-connect Bridge client used by the WisCode Issue runtime."""
+"""cc-connect Bridge client used by the Issue runtime."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class ProjectInfo:
 
 
 class CCConnectClient:
-    """Expose the existing skill client interface through cc-connect Bridge."""
+    """List projects and submit Issues through cc-connect Bridge."""
 
     _RECEIVE_POLL_SECONDS = 0.01
 
@@ -93,51 +93,7 @@ class CCConnectClient:
                         "content": content,
                         "reply_ctx": request_id,
                     }))
-                    return await self._wait_for_reply(socket, request_id, None, deadline)
-        except TimeoutError as exc:
-            raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
-        except CCConnectBridgeError:
-            raise
-        except Exception as exc:
-            raise CCConnectBridgeError(f"cc-connect Bridge error: {exc}") from exc
-
-    async def run_prompt(
-        self,
-        prompt: str,
-        *,
-        cwd: str = ".",
-        cancel_event: asyncio.Event | None = None,
-        on_event: Callable[[dict], None] | None = None,
-    ) -> str:
-        if cancel_event and cancel_event.is_set():
-            raise asyncio.CancelledError("Task cancelled before cc-connect execution")
-        request_id = str(uuid.uuid4())
-        session_key = f"{self.platform}:{request_id}:issue"
-        task_content = (
-            f"{prompt}\n\n## Selected Issue Workspace\n"
-            f"Work only in this directory: {cwd}"
-        )
-        if on_event is not None:
-            on_event({"step_type": "thinking", "summary": "已提交给 cc-connect / WisCode"})
-
-        try:
-            async with asyncio.timeout(self.timeout):
-                deadline = self._deadline()
-                async with self._connect(
-                    self.url,
-                    additional_headers=self._headers(),
-                ) as socket:
-                    await self._register(socket, deadline, cancel_event)
-
-                    await socket.send(json.dumps({
-                        "type": "message",
-                        "msg_id": request_id,
-                        "session_key": session_key,
-                        "user_id": "issue-overseer",
-                        "content": task_content,
-                        "reply_ctx": request_id,
-                    }))
-                    return await self._wait_for_reply(socket, request_id, cancel_event, deadline)
+                    return await self._wait_for_reply(socket, request_id, deadline)
         except TimeoutError as exc:
             raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
         except CCConnectBridgeError:
@@ -149,13 +105,10 @@ class CCConnectClient:
         self,
         socket: Any,
         request_id: str,
-        cancel_event: asyncio.Event | None,
         deadline: float,
     ) -> str:
         while True:
-            if cancel_event and cancel_event.is_set():
-                raise asyncio.CancelledError("Task cancelled during cc-connect execution")
-            frame = await self._recv_frame(socket, deadline, cancel_event)
+            frame = await self._recv_frame(socket, deadline)
             if frame.get("type") == "reply" and frame.get("reply_ctx") == request_id:
                 content = frame.get("content")
                 if isinstance(content, str):
@@ -170,7 +123,6 @@ class CCConnectClient:
         self,
         socket: Any,
         deadline: float,
-        cancel_event: asyncio.Event | None = None,
     ) -> None:
         await socket.send(json.dumps({
             "type": "register",
@@ -178,7 +130,7 @@ class CCConnectClient:
             "capabilities": ["text"],
             "metadata": {"protocol_version": 1},
         }))
-        ack = await self._recv_frame(socket, deadline, cancel_event)
+        ack = await self._recv_frame(socket, deadline)
         if ack.get("type") == "error":
             raise CCConnectBridgeError(ack.get("message") or "cc-connect returned an error")
         if ack.get("type") != "register_ack" or not ack.get("ok"):
@@ -191,11 +143,8 @@ class CCConnectClient:
         self,
         socket: Any,
         deadline: float,
-        cancel_event: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         while True:
-            if cancel_event and cancel_event.is_set():
-                raise asyncio.CancelledError("Task cancelled during cc-connect execution")
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise CCConnectBridgeError("cc-connect Bridge request timed out")

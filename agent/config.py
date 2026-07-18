@@ -18,12 +18,6 @@ class ServerConfig(BaseModel):
     port: int = 18800
 
 
-class AgentConfig(BaseModel):
-    max_turns: int = 3
-    task_timeout: int = 1800
-    plan_timeout: int = 600  # 10 minutes — plan generation needs more time than execution
-
-
 class CCConnectConfig(BaseModel):
     """Connection details for cc-connect's Bridge WebSocket endpoint."""
 
@@ -33,39 +27,8 @@ class CCConnectConfig(BaseModel):
     timeout: int = 1800
 
 
-class OpenCodeConfig(BaseModel):
-    """Legacy compatibility settings. The Issue runtime no longer uses them."""
-
-    command: str = "opencode"
-    timeout: int = 300
-
-
-class ProjectConfig(BaseModel):
-    workspace: str = "."
-    default_branch: str = "main"
-    remote: str = "origin"
-    pr_base: str = "main"
-
-
 class DatabaseConfig(BaseModel):
     path: str = "./data/mango.db"
-
-
-class SecurityConfig(BaseModel):
-    allowed_commands: list[str] = [
-        "git", "python", "pytest", "pip", "uv",
-        "cat", "ls", "find", "grep", "head", "tail",
-        "mkdir", "cp", "mv", "echo",
-    ]
-    blocked_patterns: list[str] = [
-        "rm -rf /", "rm -rf ~", "sudo",
-        "curl | bash", "wget | sh", "chmod 777",
-    ]
-
-
-class ContextConfig(BaseModel):
-    max_git_diff_lines: int = 2000
-    max_result_chars: int = 5000
 
 
 # ── Root settings ────────────────────────────────────────────────────
@@ -79,13 +42,8 @@ class Settings(BaseSettings):
     )
 
     server: ServerConfig = ServerConfig()
-    agent: AgentConfig = AgentConfig()
     cc_connect: CCConnectConfig = CCConnectConfig()
-    opencode: OpenCodeConfig = OpenCodeConfig()
-    project: ProjectConfig = ProjectConfig()
     database: DatabaseConfig = DatabaseConfig()
-    security: SecurityConfig = SecurityConfig()
-    context: ContextConfig = ContextConfig()
 
     @classmethod
     def settings_customise_sources(

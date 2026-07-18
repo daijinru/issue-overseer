@@ -7,7 +7,7 @@ import argparse
 from agent.cli.client import MangoClient
 from agent.cli.output import (
     bold, green, print_issue_detail, print_issues_table, print_json,
-    print_logs, print_steps, print_success,
+    print_success,
 )
 
 
@@ -86,23 +86,5 @@ def cmd_issue_cancel(args: argparse.Namespace) -> None:
     client = _make_client(args)
     try:
         print_success(client.cancel_issue(args.id).get("message", "取消信号已发送"))
-    finally:
-        client.close()
-
-
-def cmd_issue_logs(args: argparse.Namespace) -> None:
-    client = _make_client(args)
-    try:
-        logs = client.get_logs(args.id)
-        print_json(logs) if args.json_output else print_logs(logs)
-    finally:
-        client.close()
-
-
-def cmd_issue_steps(args: argparse.Namespace) -> None:
-    client = _make_client(args)
-    try:
-        steps = client.get_steps(args.id)
-        print_json(steps) if args.json_output else print_steps(steps)
     finally:
         client.close()

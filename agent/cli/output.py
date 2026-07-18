@@ -55,18 +55,6 @@ def print_issue_detail(issue: dict) -> None:
 def print_issues_table(issues: list[dict]) -> None:
     for issue in issues:
         print(f"{issue['id'][:8]}  {issue['status']:8}  {issue['project']:16}  {issue['content']}")
-
-
-def print_logs(logs: list[dict]) -> None:
-    for log in logs:
-        print(f"[{log.get('level', 'info')}] {log.get('message', '')}")
-
-
-def print_steps(steps: list[dict]) -> None:
-    for step in steps:
-        print(step.get("summary") or step.get("step_type", ""))
-
-
 def print_error(message: str) -> None:
     print(f"Error: {message}", file=sys.stderr)
 

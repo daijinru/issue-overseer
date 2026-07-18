@@ -34,5 +34,5 @@ packages = ["agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "e2e: end-to-end integration tests (require real opencode CLI)",
+    "e2e: end-to-end integration tests",
 ]

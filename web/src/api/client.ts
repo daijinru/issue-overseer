@@ -1,11 +1,7 @@
 import type {
   CCConnectProject,
-  Execution,
-  ExecutionLog,
-  ExecutionStep,
   Issue,
   IssueCreateRequest,
-  IssueRetryRequest,
   IssueStatus,
 } from '../types';
 
@@ -58,37 +54,4 @@ export function cancelIssue(id: string) {
 
 export function deleteIssue(id: string) {
   return request<void>(`/api/issues/${id}`, { method: 'DELETE' });
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function retryIssue(id: string, data?: IssueRetryRequest) {
-  return request<{ message: string; issue_id: string }>(`/api/issues/${id}/retry`, {
-    method: 'POST',
-    body: JSON.stringify(data ?? {}),
-  });
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function getIssueLogs(id: string) {
-  return request<ExecutionLog[]>(`/api/issues/${id}/logs`);
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function getIssueExecutions(id: string) {
-  return request<Execution[]>(`/api/issues/${id}/executions`);
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function getIssueSteps(id: string) {
-  return request<ExecutionStep[]>(`/api/issues/${id}/steps`);
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function updateSpec(id: string, spec: string) {
-  return request<Issue>(`/api/issues/${id}/spec`, { method: 'PUT', body: JSON.stringify({ spec }) });
-}
-
-/** @deprecated The remaining callers are removed with the legacy detail UI in Task 5. */
-export function rejectSpec(id: string) {
-  return request<Issue>(`/api/issues/${id}/reject-spec`, { method: 'POST' });
 }

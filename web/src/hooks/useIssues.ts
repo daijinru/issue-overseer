@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listIssues } from '../api/client';
-import { usePolling } from './usePolling';
 import type { Issue } from '../types';
 
 export function useIssues() {
@@ -23,12 +22,6 @@ export function useIssues() {
     setLoading(true);
     fetchIssues();
   }, [fetchIssues]);
-
-  // Poll every 5s if any issue is running or planning
-  const hasActive = issues.some(
-    (i) => i.status === 'running' || i.status === 'planning',
-  );
-  usePolling(fetchIssues, 5000, hasActive);
 
   return {
     issues,

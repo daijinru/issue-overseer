@@ -21,7 +21,7 @@ const statusToColumn: Record<IssueStatus, KanbanColumnDef['key']> = {
 };
 
 export function getColumnForIssue(issue: Issue): KanbanColumnDef['key'] {
-  return statusToColumn[issue.status as IssueStatus] ?? 'todo';
+  return statusToColumn[issue.status];
 }
 
 export function sortColumnIssues(issues: Issue[]): Issue[] {

@@ -9,8 +9,7 @@ import sys
 from agent import __version__
 from agent.cli.commands import (
     cmd_health, cmd_issue_cancel, cmd_issue_create, cmd_issue_delete,
-    cmd_issue_list, cmd_issue_logs, cmd_issue_run, cmd_issue_show,
-    cmd_issue_steps, cmd_serve,
+    cmd_issue_list, cmd_issue_run, cmd_issue_show, cmd_serve,
 )
 
 
@@ -48,13 +47,6 @@ def _add_issue_commands(subparsers) -> None:
     cancel = subparsers.add_parser("cancel", help="取消执行")
     cancel.add_argument("id")
     cancel.set_defaults(func=cmd_issue_cancel)
-
-    for name, func, help_text in (("logs", cmd_issue_logs, "查看日志"), ("steps", cmd_issue_steps, "查看步骤")):
-        command = subparsers.add_parser(name, help=help_text)
-        command.add_argument("id")
-        command.add_argument("--json", dest="json_output", action="store_true")
-        command.set_defaults(func=func)
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mango", description="Mango CLI")

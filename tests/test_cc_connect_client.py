@@ -30,20 +30,6 @@ class FakeSocket:
         return self.incoming.popleft()
 
 
-class BlockingSocket(FakeSocket):
-    def __init__(self, incoming: list[dict]) -> None:
-        super().__init__(incoming)
-        self.blocked = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def recv(self) -> str:
-        if self.incoming:
-            return await super().recv()
-        self.blocked.set()
-        await self.release.wait()
-        raise AssertionError("blocking socket was unexpectedly released")
-
-
 class UnrelatedReplySocket(FakeSocket):
     async def recv(self) -> str:
         if self.incoming:
@@ -155,19 +141,3 @@ async def test_run_task_uses_one_deadline_for_unrelated_replies(monkeypatch: pyt
 
     with pytest.raises(CCConnectBridgeError, match="timed out"):
         await asyncio.wait_for(client.run_task("api", "fix login", "issue-1"), timeout=0.1)
-
-
-@pytest.mark.asyncio
-async def test_run_prompt_responds_promptly_to_cancellation() -> None:
-    socket = BlockingSocket([{"type": "register_ack", "ok": True}])
-    cancel_event = asyncio.Event()
-    client = CCConnectClient(
-        url="ws://bridge", token="", platform="issue-overseer", timeout=60,
-        connect=lambda _url, **kwargs: _connect(socket, **kwargs),
-    )
-    task = asyncio.create_task(client.run_prompt("fix login", cancel_event=cancel_event))
-    await socket.blocked.wait()
-    cancel_event.set()
-
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=0.1)

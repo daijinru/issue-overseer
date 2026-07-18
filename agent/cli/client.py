@@ -52,13 +52,6 @@ class MangoClient:
     def cancel_issue(self, issue_id: str) -> dict:
         return self._request("POST", f"/api/issues/{issue_id}/cancel").json()
 
-    def get_logs(self, issue_id: str) -> list[dict]:
-        return self._request("GET", f"/api/issues/{issue_id}/logs").json()
-
-    def get_steps(self, issue_id: str) -> list[dict]:
-        return self._request("GET", f"/api/issues/{issue_id}/steps").json()
-
-
 def _extract_detail(response: httpx.Response) -> str:
     try:
         detail = response.json().get("detail", "")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +11,12 @@ import pytest
 from agent.agent.cc_connect_client import CCConnectBridgeError
 from agent.db.repos import IssueRepo
 from agent.models import IssueCreate, IssueOutcome, IssueStatus
+
+
+def test_runtime_has_no_local_opencode_dependency():
+    source = Path("agent/agent/runtime.py").read_text()
+    assert "OpenCodeClient" not in source
+    assert "create_subprocess_exec" not in source
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 import { Button, Popconfirm, Space, message } from 'antd';
 import { DeleteOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { cancelIssue, deleteIssue, runIssue } from '../api/client';
-import type { AnyIssueStatus, IssueStatus } from '../types';
+import type { IssueStatus } from '../types';
 
 type ActionKey = 'run' | 'cancel' | 'delete';
 
@@ -38,13 +38,13 @@ const ACTION_MATRIX: Record<IssueStatus, ActionDef[]> = {
 
 interface ActionButtonsProps {
   issueId: string;
-  status: AnyIssueStatus;
+  status: IssueStatus;
   onActionDone: () => void;
   compact?: boolean;
 }
 
 export function ActionButtons({ issueId, status, onActionDone, compact }: ActionButtonsProps) {
-  const actions = ACTION_MATRIX[status as IssueStatus] ?? [];
+  const actions = ACTION_MATRIX[status];
 
   const executeAction = async (action: ActionKey) => {
     try {
