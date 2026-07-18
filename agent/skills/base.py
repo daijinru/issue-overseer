@@ -36,7 +36,7 @@ class GenericSkill(BaseSkill):
         settings = get_settings()
         safety = build_safety_prompt(settings.security)
         sections: list[str] = []
-        sections.append(f"## Task\n**{ctx.issue.title}**\n{ctx.issue.description}")
+        sections.append(f"## Task\nProject: {ctx.issue.project}\n{ctx.issue.content}")
         sections.append(safety)
         sections.append(f"## Progress\nThis is turn {ctx.turn_number} of {ctx.max_turns}.")
         if ctx.last_error:
@@ -50,8 +50,4 @@ class GenericSkill(BaseSkill):
             for h in ctx.execution_history:
                 history_lines.append(f"- Turn {h.get('turn')}: {h.get('status')} — {h.get('summary', 'N/A')}")
             sections.append("## Execution History\n" + "\n".join(history_lines))
-        if ctx.human_instruction:
-            sections.append(f"## Additional Instructions from User\n{ctx.human_instruction}")
-        if ctx.spec:
-            sections.append(f"## Execution Plan (Spec)\n{ctx.spec}")
         return "\n\n".join(sections)

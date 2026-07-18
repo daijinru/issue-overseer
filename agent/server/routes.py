@@ -109,7 +109,10 @@ async def run_issue(issue_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Issue must be pending to run")
     if runtime.is_running(issue_id):
         raise HTTPException(status_code=409, detail="Issue is already running")
-    await runtime.start_task(issue_id)
+    try:
+        await runtime.start_task(issue_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Issue is no longer pending") from exc
     return {"message": "Task started", "issue_id": issue_id}
 
 

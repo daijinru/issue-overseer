@@ -38,7 +38,9 @@ async def test_stream_endpoint_returns_event_stream(sse_client):
     """GET /api/issues/{id}/stream should return text/event-stream content type."""
     client, event_bus = sse_client
     # Create an issue first
-    resp = await client.post("/api/issues", json={"title": "SSE Test"})
+    resp = await client.post(
+        "/api/issues", json={"content": "SSE Test", "project": "api"}
+    )
     issue_id = resp.json()["id"]
 
     # Publish a terminal event so the stream closes quickly
@@ -57,7 +59,9 @@ async def test_stream_endpoint_returns_event_stream(sse_client):
 async def test_stream_receives_published_events(sse_client):
     """SSE stream should contain events published via EventBus."""
     client, event_bus = sse_client
-    resp = await client.post("/api/issues", json={"title": "SSE Events"})
+    resp = await client.post(
+        "/api/issues", json={"content": "SSE Events", "project": "api"}
+    )
     issue_id = resp.json()["id"]
 
     async def _publish_events():
@@ -91,7 +95,9 @@ async def test_stream_404_for_missing_issue(sse_client):
 async def test_stream_cleans_up_subscriber(sse_client):
     """After the stream closes, the EventBus should have no lingering subscribers."""
     client, event_bus = sse_client
-    resp = await client.post("/api/issues", json={"title": "Cleanup Test"})
+    resp = await client.post(
+        "/api/issues", json={"content": "Cleanup Test", "project": "api"}
+    )
     issue_id = resp.json()["id"]
 
     assert event_bus.subscriber_count(issue_id) == 0
@@ -112,7 +118,9 @@ async def test_stream_cleans_up_subscriber(sse_client):
 async def test_stream_receives_opencode_step_events(sse_client):
     """SSE stream should contain opencode_step events published via EventBus."""
     client, event_bus = sse_client
-    resp = await client.post("/api/issues", json={"title": "Step Events"})
+    resp = await client.post(
+        "/api/issues", json={"content": "Step Events", "project": "api"}
+    )
     issue_id = resp.json()["id"]
 
     async def _publish_events():

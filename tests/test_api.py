@@ -80,6 +80,20 @@ async def test_run_issue_rejects_finished_issue(api_client):
 
 
 @pytest.mark.asyncio
+async def test_run_issue_translates_a_concurrent_claim_loss_to_conflict(api_client):
+    created = await api_client.post(
+        "/api/issues", json={"content": "修复登录", "project": "api"}
+    )
+    api_client._transport.app.state.runtime.start_task = AsyncMock(
+        side_effect=ValueError("Issue is in status IssueStatus.running, cannot run")
+    )
+
+    response = await api_client.post(f"/api/issues/{created.json()['id']}/run")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_finish_keeps_error_as_terminal_outcome(initialized_db):
     issue = await IssueRepo().create(IssueCreate(content="x", project="api"))
     await IssueRepo().finish(

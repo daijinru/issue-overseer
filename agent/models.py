@@ -121,5 +121,3 @@ class TurnContext:
     last_error: str | None = None
     git_diff: str | None = None
     execution_history: list[dict] = field(default_factory=list)
-    human_instruction: str | None = None
-    spec: str | None = None
