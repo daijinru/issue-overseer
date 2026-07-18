@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from agent.db.repos import IssueRepo
-from agent.models import IssueCreate, IssueStatus
+from agent.models import IssueCreate, IssueOutcome, IssueStatus
 from agent.server.app import create_app
 from agent.server import routes
 
@@ -31,6 +31,47 @@ async def api_client(initialized_db):
 
 
 # ── CRUD tests ──
+
+
+@pytest.mark.asyncio
+async def test_create_issue_persists_project(client):
+    response = await client.post(
+        "/api/issues", json={"content": "修复登录", "project": "api"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+    assert response.json()["project"] == "api"
+
+
+@pytest.mark.asyncio
+async def test_finish_keeps_error_as_terminal_outcome(initialized_db):
+    issue = await IssueRepo().create(IssueCreate(content="x", project="api"))
+
+    await IssueRepo().finish(
+        issue.id, IssueOutcome.error, None, "Bridge disconnected"
+    )
+
+    saved = await IssueRepo().get(issue.id)
+    assert saved is not None
+    assert (saved.status, saved.outcome) == (
+        IssueStatus.finished,
+        IssueOutcome.error,
+    )
+    assert saved.error_message == "Bridge disconnected"
+    assert saved.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_start_only_transitions_pending_issue_once(initialized_db):
+    issue = await IssueRepo().create(IssueCreate(content="x", project="api"))
+
+    assert await IssueRepo().start(issue.id) is True
+    assert await IssueRepo().start(issue.id) is False
+
+    saved = await IssueRepo().get(issue.id)
+    assert saved is not None
+    assert saved.status == IssueStatus.running
 
 
 @pytest.mark.asyncio

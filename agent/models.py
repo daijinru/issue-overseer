@@ -5,21 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Enums ────────────────────────────────────────────────────────────
 
 
 class IssueStatus(str, Enum):
-    open = "open"
-    planning = "planning"
-    planned = "planned"
+    pending = "pending"
     running = "running"
-    review = "review"
-    done = "done"
-    waiting_human = "waiting_human"
-    cancelled = "cancelled"
+    finished = "finished"
+
+
+class IssueOutcome(str, Enum):
+    success = "success"
+    error = "error"
 
 
 class IssuePriority(str, Enum):
@@ -51,19 +51,18 @@ class LogLevel(str, Enum):
 
 class Issue(BaseModel):
     id: str
-    title: str
-    description: str = ""
-    status: IssueStatus = IssueStatus.open
-    branch_name: str | None = None
-    human_instruction: str | None = None
-    pr_url: str | None = None
-    failure_reason: str | None = None
-    workspace: str | None = None
+    content: str
+    project: str
+    status: IssueStatus = IssueStatus.pending
+    outcome: IssueOutcome | None = None
+    result: str | None = None
+    error_message: str | None = Field(
+        default=None,
+        validation_alias="failure_reason",
+    )
     created_at: str | None = None
     updated_at: str | None = None
-    priority: IssuePriority = IssuePriority.medium
-    spec: str | None = None
-    agent: AgentType = AgentType.wiscode
+    finished_at: str | None = None
 
 
 class Execution(BaseModel):
@@ -110,11 +109,8 @@ class ExecutionStep(BaseModel):
 
 
 class IssueCreate(BaseModel):
-    title: str
-    description: str = ""
-    workspace: str | None = None
-    priority: IssuePriority = IssuePriority.medium
-    agent: AgentType = AgentType.wiscode
+    content: str
+    project: str
 
 
 class IssueRetry(BaseModel):

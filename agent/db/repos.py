@@ -13,6 +13,7 @@ from agent.models import (
     ExecutionStep,
     Issue,
     IssueCreate,
+    IssueOutcome,
     IssuePriority,
     IssueStatus,
     LogLevel,
@@ -32,14 +33,14 @@ class IssueRepo:
         issue_id = str(uuid.uuid4())
         async with get_db_connection() as db:
             await db.execute(
-                "INSERT INTO issues (id, title, description, workspace, priority, agent) VALUES (?, ?, ?, ?, ?, ?)",
+                """INSERT INTO issues (id, title, content, project, status)
+                   VALUES (?, ?, ?, ?, ?)""",
                 (
                     issue_id,
-                    data.title,
-                    data.description,
-                    data.workspace,
-                    data.priority.value,
-                    data.agent.value,
+                    data.content,
+                    data.content,
+                    data.project,
+                    IssueStatus.pending.value,
                 ),
             )
             await db.commit()
@@ -48,6 +49,42 @@ class IssueRepo:
             )
             row = await cursor.fetchone()
             return Issue(**dict(row))  # type: ignore[arg-type]
+
+    async def start(self, issue_id: str) -> bool:
+        """Transition an issue from pending to running exactly once."""
+        async with get_db_connection() as db:
+            cursor = await db.execute(
+                """UPDATE issues
+                   SET status = ?, updated_at = datetime('now')
+                   WHERE id = ? AND status = ?""",
+                (IssueStatus.running.value, issue_id, IssueStatus.pending.value),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def finish(
+        self,
+        issue_id: str,
+        outcome: IssueOutcome,
+        result: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Record one terminal issue outcome."""
+        async with get_db_connection() as db:
+            await db.execute(
+                """UPDATE issues
+                   SET status = ?, outcome = ?, result = ?, failure_reason = ?,
+                       finished_at = datetime('now'), updated_at = datetime('now')
+                   WHERE id = ?""",
+                (
+                    IssueStatus.finished.value,
+                    outcome.value,
+                    result,
+                    error_message,
+                    issue_id,
+                ),
+            )
+            await db.commit()
 
     async def get(self, issue_id: str) -> Issue | None:
         async with get_db_connection() as db:
@@ -112,7 +149,7 @@ class IssueRepo:
                 )
             await db.execute(
                 "UPDATE issues SET failure_reason = NULL, status = ?, updated_at = datetime('now') WHERE id = ?",
-                (IssueStatus.open.value, issue_id),
+                (IssueStatus.pending.value, issue_id),
             )
             await db.commit()
 
