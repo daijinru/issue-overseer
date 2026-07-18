@@ -1,9 +1,9 @@
 import { Tag } from 'antd';
-import type { IssueStatus, ExecutionStatus } from '../types';
+import type { AnyIssueStatus, ExecutionStatus } from '../types';
 import { issueStatusColor, issueStatusLabel, executionStatusColor, executionStatusLabel } from '../utils/status';
 
 interface IssueStatusTagProps {
-  status: IssueStatus;
+  status: AnyIssueStatus;
 }
 
 export function IssueStatusTag({ status }: IssueStatusTagProps) {

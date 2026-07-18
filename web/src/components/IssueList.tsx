@@ -7,13 +7,9 @@ import type { Issue, IssueStatus } from '../types';
 
 const STATUS_OPTIONS: Array<{ label: string; value: IssueStatus | 'all' }> = [
   { label: '全部', value: 'all' },
-  { label: '待处理', value: 'open' },
-  { label: '方案中', value: 'planning' },
-  { label: '已规划', value: 'planned' },
+  { label: '待执行', value: 'pending' },
   { label: '执行中', value: 'running' },
-  { label: '待审查', value: 'review' },
-  { label: '已完成', value: 'done' },
-  { label: '等待指令', value: 'waiting_human' },
+  { label: '已结束', value: 'finished' },
 ];
 
 interface IssueListProps {
@@ -91,12 +87,12 @@ export function IssueList({
               <div style={{ width: '100%' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Typography.Text strong ellipsis style={{ flex: 1 }}>
-                    {issue.title}
+                    {issue.content}
                   </Typography.Text>
                   <IssueStatusTag status={issue.status} />
                 </div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {new Date(issue.created_at).toLocaleString()}
+                  {issue.project} · {issue.created_at ? new Date(issue.created_at).toLocaleString() : '-'}
                 </Typography.Text>
               </div>
             </List.Item>

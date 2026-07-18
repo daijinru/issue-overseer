@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { Input, Button, Space, message, Typography } from 'antd';
 import { SendOutlined, FolderOutlined } from '@ant-design/icons';
 import { retryIssue } from '../api/client';
-import type { IssueStatus } from '../types';
+import type { AnyIssueStatus } from '../types';
 
 interface RetryInputProps {
   issueId: string;
-  status: IssueStatus;
+  status: AnyIssueStatus;
   failureReason?: string | null;
   currentWorkspace?: string | null;
   onRetryDone: () => void;

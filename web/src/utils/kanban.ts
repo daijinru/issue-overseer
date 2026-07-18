@@ -1,10 +1,10 @@
-import type { Issue, IssueStatus } from '../types';
+import type { AnyIssueStatus, Issue } from '../types';
 
 export interface KanbanColumnDef {
   key: string;
   title: string;
   agentRole: string;
-  statuses: IssueStatus[];
+  statuses: AnyIssueStatus[];
   color: string;
 }
 

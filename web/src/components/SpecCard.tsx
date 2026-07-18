@@ -10,7 +10,7 @@ import {
   UndoOutlined,
 } from '@ant-design/icons';
 import { rejectSpec, updateSpec } from '../api/client';
-import type { IssueStatus } from '../types';
+import type { AnyIssueStatus } from '../types';
 
 interface SpecData {
   plan: string;
@@ -22,7 +22,7 @@ interface SpecData {
 interface SpecCardProps {
   issueId: string;
   spec: string;            // JSON string from issue.spec
-  status: IssueStatus;
+  status: AnyIssueStatus;
   onActionDone: () => void;
 }
 

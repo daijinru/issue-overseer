@@ -1,7 +1,9 @@
-import type { IssueStatus, ExecutionStatus } from '../types';
+import type { AnyIssueStatus, ExecutionStatus } from '../types';
 
 // Issue status → Ant Design Tag color
-export const issueStatusColor: Record<IssueStatus, string> = {
+export const issueStatusColor: Record<AnyIssueStatus, string> = {
+  pending: 'blue',
+  finished: 'success',
   open: 'blue',
   planning: 'processing',
   planned: 'purple',
@@ -13,7 +15,9 @@ export const issueStatusColor: Record<IssueStatus, string> = {
 };
 
 // Issue status → Chinese label
-export const issueStatusLabel: Record<IssueStatus, string> = {
+export const issueStatusLabel: Record<AnyIssueStatus, string> = {
+  pending: '待执行',
+  finished: '已结束',
   open: '待处理',
   planning: '生成方案中',
   planned: '方案就绪',
