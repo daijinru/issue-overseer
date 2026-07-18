@@ -83,7 +83,7 @@ async def cancel_issue(issue_id: str, request: Request):
     runtime = _get_runtime(request)
     cancelled = await runtime.cancel_task(issue_id)
     if not cancelled:
-        raise HTTPException(status_code=409, detail="Issue is not running")
+        raise HTTPException(status_code=409, detail="Issue is not cancellable")
     return {"message": "Cancel signal sent", "issue_id": issue_id}
 
 

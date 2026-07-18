@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from agent.db.repos import IssueRepo
+from agent.agent.runtime import AgentRuntime
 from agent.agent.cc_connect_client import CCConnectBridgeError, ProjectInfo
 from agent.models import IssueCreate, IssueOutcome, IssueStatus
 from agent.server.app import create_app
@@ -117,6 +119,37 @@ async def test_run_issue_translates_a_concurrent_claim_loss_to_conflict(api_clie
     response = await api_client.post(f"/api/issues/{created.json()['id']}/run")
 
     assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_conflict_after_bridge_dispatch(initialized_db):
+    app = create_app()
+    runtime = AgentRuntime()
+    dispatched = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run_task(*_args):
+        dispatched.set()
+        await release.wait()
+        return "done"
+
+    runtime.client.run_task = AsyncMock(side_effect=run_task)
+    app.state.runtime = runtime
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/issues", json={"content": "修复登录", "project": "api"}
+        )
+        issue_id = created.json()["id"]
+        assert (await client.post(f"/api/issues/{issue_id}/run")).status_code == 202
+        await dispatched.wait()
+
+        response = await client.post(f"/api/issues/{issue_id}/cancel")
+
+        assert response.status_code == 409
+        release.set()
+        await runtime.wait_for_task(issue_id)
+    await runtime.client.close()
 
 
 @pytest.mark.asyncio

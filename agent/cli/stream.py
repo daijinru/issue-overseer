@@ -73,11 +73,10 @@ def _render_event(event_type: str, data: dict) -> str | None:
         return f"🔗 {bold('PR:')} {url}"
 
     if event_type == "task_end":
-        status = data.get("status", "")
-        if status in ("done", "review", "completed"):
+        if data.get("success") is True:
             return f"\n✅ {green('任务完成')}"
-        reason = data.get("failure_reason", "") or data.get("reason", "")
-        return f"\n❌ {red('失败')}: {reason}" if reason else f"\n❌ {red('失败')}"
+        error = data.get("error", "")
+        return f"\n❌ {red('失败')}: {error}" if error else f"\n❌ {red('失败')}"
 
     if event_type == "task_cancelled":
         return f"\n⚠️  {yellow('已取消')}"

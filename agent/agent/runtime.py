@@ -27,6 +27,7 @@ class AgentRuntime:
         )
         self._cancel_tokens: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._bridge_task_ids: set[str] = set()
         self._event_bus = event_bus
 
     def _emit(self, issue_id: str, event_type: str, data: dict | None = None) -> None:
@@ -60,7 +61,10 @@ class AgentRuntime:
 
     async def cancel_task(self, issue_id: str) -> bool:
         cancel_event = self._cancel_tokens.get(issue_id)
-        if cancel_event is None:
+        task = self._running_tasks.get(issue_id)
+        if cancel_event is None or task is None or task.done():
+            return False
+        if issue_id in self._bridge_task_ids:
             return False
         cancel_event.set()
         return True
@@ -77,6 +81,7 @@ class AgentRuntime:
     def _cleanup(self, issue_id: str) -> None:
         self._cancel_tokens.pop(issue_id, None)
         self._running_tasks.pop(issue_id, None)
+        self._bridge_task_ids.discard(issue_id)
 
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
         """Run one Issue against its selected cc-connect project."""
@@ -88,12 +93,20 @@ class AgentRuntime:
         issue = await self.issue_repo.get(issue_id)
         if issue is None:
             return
+        if cancel_event.is_set():
+            await self.issue_repo.finish(issue_id, IssueOutcome.error, None, "任务已取消")
+            self._emit(issue_id, "task_end", {"success": False, "error": "任务已取消"})
+            return
         self._emit(issue_id, "task_start", {"issue_id": issue_id})
+        self._bridge_task_ids.add(issue_id)
         try:
-            result = await self.client.run_task(issue.project, issue.content, issue.id)
-        except CCConnectBridgeError as exc:
-            await self.issue_repo.finish(issue_id, IssueOutcome.error, None, str(exc))
-            self._emit(issue_id, "task_end", {"success": False, "error": str(exc)})
-        else:
-            await self.issue_repo.finish(issue_id, IssueOutcome.success, result, None)
-            self._emit(issue_id, "task_end", {"success": True})
+            try:
+                result = await self.client.run_task(issue.project, issue.content, issue.id)
+            except CCConnectBridgeError as exc:
+                await self.issue_repo.finish(issue_id, IssueOutcome.error, None, str(exc))
+                self._emit(issue_id, "task_end", {"success": False, "error": str(exc)})
+            else:
+                await self.issue_repo.finish(issue_id, IssueOutcome.success, result, None)
+                self._emit(issue_id, "task_end", {"success": True})
+        finally:
+            self._bridge_task_ids.discard(issue_id)

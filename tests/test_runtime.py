@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -38,4 +39,35 @@ async def test_bridge_failure_finishes_issue_as_error(mock_runtime):
         IssueStatus.finished,
         IssueOutcome.error,
         "offline",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelling_before_bridge_dispatch_does_not_submit_the_issue(mock_runtime):
+    _, runtime = mock_runtime
+    issue = await IssueRepo().create(IssueCreate(content="x", project="api"))
+    original_get = runtime.issue_repo.get
+    issue_loaded = asyncio.Event()
+    continue_dispatch = asyncio.Event()
+
+    async def delayed_get(issue_id):
+        issue_loaded.set()
+        await continue_dispatch.wait()
+        return await original_get(issue_id)
+
+    runtime.issue_repo.get = delayed_get
+    runtime.client.run_task = AsyncMock(return_value="done")
+
+    await runtime.start_task(issue.id)
+    await issue_loaded.wait()
+    assert await runtime.cancel_task(issue.id) is True
+    continue_dispatch.set()
+    await runtime.wait_for_task(issue.id)
+
+    runtime.client.run_task.assert_not_awaited()
+    saved = await IssueRepo().get(issue.id)
+    assert (saved.status, saved.outcome, saved.error_message) == (
+        IssueStatus.finished,
+        IssueOutcome.error,
+        "任务已取消",
     )
