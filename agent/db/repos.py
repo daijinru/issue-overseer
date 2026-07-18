@@ -14,16 +14,9 @@ from agent.models import (
     Issue,
     IssueCreate,
     IssueOutcome,
-    IssuePriority,
     IssueStatus,
     LogLevel,
 )
-
-
-_ALLOWED_ISSUE_FIELDS = frozenset({
-    "branch_name", "human_instruction", "pr_url", "workspace", "failure_reason",
-    "priority", "spec",
-})
 
 
 class IssueRepo:
@@ -98,7 +91,6 @@ class IssueRepo:
 
     async def list_all(
         self, status: IssueStatus | None = None,
-        priority: IssuePriority | None = None,
     ) -> list[Issue]:
         async with get_db_connection() as db:
             conditions: list[str] = []
@@ -106,9 +98,6 @@ class IssueRepo:
             if status is not None:
                 conditions.append("status = ?")
                 params.append(status.value)
-            if priority is not None:
-                conditions.append("priority = ?")
-                params.append(priority.value)
             where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
             cursor = await db.execute(
                 f"SELECT * FROM issues{where} ORDER BY created_at DESC",
@@ -124,32 +113,6 @@ class IssueRepo:
             await db.execute(
                 "UPDATE issues SET status = ?, updated_at = datetime('now') WHERE id = ?",
                 (status.value, issue_id),
-            )
-            await db.commit()
-
-    async def retry_reset(
-        self, issue_id: str, human_instruction: str | None = None,
-        workspace: str | None = None,
-    ) -> None:
-        """Atomically update human_instruction / workspace (if given) and reset status to 'open'.
-
-        Both writes happen in a single transaction so a crash in between
-        cannot leave the issue in an inconsistent state.
-        """
-        async with get_db_connection() as db:
-            if human_instruction is not None:
-                await db.execute(
-                    "UPDATE issues SET human_instruction = ?, updated_at = datetime('now') WHERE id = ?",
-                    (human_instruction, issue_id),
-                )
-            if workspace is not None:
-                await db.execute(
-                    "UPDATE issues SET workspace = ?, updated_at = datetime('now') WHERE id = ?",
-                    (workspace, issue_id),
-                )
-            await db.execute(
-                "UPDATE issues SET failure_reason = NULL, status = ?, updated_at = datetime('now') WHERE id = ?",
-                (IssueStatus.pending.value, issue_id),
             )
             await db.commit()
 
@@ -180,22 +143,6 @@ class IssueRepo:
             )
             await db.commit()
             return cursor.rowcount > 0
-
-    async def update_fields(self, issue_id: str, **fields: object) -> None:
-        if not fields:
-            return
-        invalid = set(fields) - _ALLOWED_ISSUE_FIELDS
-        if invalid:
-            raise ValueError(f"Disallowed field(s): {invalid}")
-        set_clauses = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [issue_id]
-        async with get_db_connection() as db:
-            await db.execute(
-                f"UPDATE issues SET {set_clauses}, updated_at = datetime('now') WHERE id = ?",
-                values,
-            )
-            await db.commit()
-
 
 class ExecutionRepo:
     """Repository for the ``executions`` table."""

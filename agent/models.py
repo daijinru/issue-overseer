@@ -22,16 +22,6 @@ class IssueOutcome(str, Enum):
     error = "error"
 
 
-class IssuePriority(str, Enum):
-    high = "high"
-    medium = "medium"
-    low = "low"
-
-
-class AgentType(str, Enum):
-    wiscode = "wiscode"
-
-
 class ExecutionStatus(str, Enum):
     running = "running"
     completed = "completed"
@@ -111,17 +101,6 @@ class ExecutionStep(BaseModel):
 class IssueCreate(BaseModel):
     content: str
     project: str
-
-
-class IssueRetry(BaseModel):
-    human_instruction: str | None = None
-    workspace: str | None = None
-
-
-class IssueUpdate(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    priority: IssuePriority | None = None
 
 
 # ── Runtime data structures ─────────────────────────────────────────

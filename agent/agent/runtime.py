@@ -1,32 +1,22 @@
-"""Agent Runtime — runTask → runTurn → runAttempt loop."""
+"""Runtime lifecycle coordinator for simplified Issues."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
-import uuid
-from dataclasses import asdict
-from typing import TYPE_CHECKING
 
-from agent.agent.context import build_turn_context
 from agent.agent.cc_connect_client import CCConnectClient
-from agent.agent.safety import extract_commands_from_result, validate_command
 from agent.config import get_settings
 from agent.db.repos import ExecutionLogRepo, ExecutionRepo, ExecutionStepRepo, IssueRepo
-from agent.models import ExecutionStatus, Issue, IssueStatus, LogLevel
-from agent.skills.base import GenericSkill
-from agent.skills.plan import PlanSkill, extract_spec_json, validate_spec
-
-if TYPE_CHECKING:
-    from agent.server.event_bus import EventBus
+from agent.models import ExecutionStatus, IssueOutcome, IssueStatus, LogLevel
 
 logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
-    def __init__(self, event_bus: EventBus | None = None) -> None:
+    """Own Issue lifecycle state while Bridge execution is integrated separately."""
+
+    def __init__(self, event_bus=None) -> None:
         self.settings = get_settings()
         self.issue_repo = IssueRepo()
         self.exec_repo = ExecutionRepo()
@@ -38,23 +28,17 @@ class AgentRuntime:
             platform=self.settings.cc_connect.platform,
             timeout=self.settings.cc_connect.timeout,
         )
-        self.skill = GenericSkill(self.client)
-        self.plan_skill = PlanSkill(self.client)
         self._cancel_tokens: dict[str, asyncio.Event] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._event_bus = event_bus
 
-    # ── Event helpers ───────────────────────────────────────────────
-
     def _emit(self, issue_id: str, event_type: str, data: dict | None = None) -> None:
-        """Publish an event via the EventBus (no-op when bus is absent)."""
         if self._event_bus is not None:
             self._event_bus.publish(issue_id, event_type, data)
 
     async def _log(
         self, issue_id: str, execution_id: str, level: LogLevel, message: str,
     ) -> None:
-        """Write a log to DB and push it to the frontend via SSE in one call."""
         await self.log_repo.append(execution_id, level, message)
         self._emit(issue_id, "execution_log", {
             "execution_id": execution_id,
@@ -62,240 +46,36 @@ class AgentRuntime:
             "message": message,
         })
 
-    async def _fail_task(self, issue_id: str, reason: str) -> None:
-        """Mark issue as waiting_human with a specific, user-visible failure reason."""
-        logger.warning("Task %s failed: %s", issue_id, reason)
-        await self.issue_repo.update_fields(issue_id, failure_reason=reason)
-        await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
-        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": False, "failure_reason": reason})
-
     async def recover_from_restart(self) -> None:
-        """Recover issues stuck in 'running' or 'planning' after a service restart.
-
-        Sets them to 'waiting_human' and logs the interruption.
-        """
-        for stuck_status in (IssueStatus.running, IssueStatus.planning):
-            stuck_issues = await self.issue_repo.list_all(status=stuck_status)
-            for issue in stuck_issues:
-                logger.warning("Recovering stuck issue %s (%s) from %s", issue.id, issue.title, stuck_status.value)
-                await self.issue_repo.update_fields(issue.id, failure_reason="服务重启，执行中断")
-                await self.issue_repo.update_status(issue.id, IssueStatus.waiting_human)
-                # Find the latest execution for this issue and log the interruption
-                executions = await self.exec_repo.list_by_issue(issue.id)
-                if executions:
-                    latest_exec = executions[-1]
-                    # Mark running executions as failed
-                    if latest_exec.status == ExecutionStatus.running:
-                        await self.exec_repo.finish(
-                            latest_exec.id,
-                            status=ExecutionStatus.failed,
-                            error_message="服务重启，执行中断",
-                        )
-                    await self._log(
-                        issue.id, latest_exec.id, LogLevel.warn, "服务重启，执行中断"
+        """Finish any interrupted running Issues with an error outcome."""
+        for issue in await self.issue_repo.list_all(status=IssueStatus.running):
+            reason = "服务重启，执行中断"
+            logger.warning("Recovering interrupted Issue %s", issue.id)
+            await self.issue_repo.finish(issue.id, IssueOutcome.error, None, reason)
+            executions = await self.exec_repo.list_by_issue(issue.id)
+            if executions:
+                latest = executions[-1]
+                if latest.status is ExecutionStatus.running:
+                    await self.exec_repo.finish(
+                        latest.id,
+                        status=ExecutionStatus.failed,
+                        error_message=reason,
                     )
-                logger.info("Issue %s recovered to waiting_human", issue.id)
+                await self._log(issue.id, latest.id, LogLevel.warn, reason)
 
     async def start_task(self, issue_id: str) -> None:
-        issue = await self.issue_repo.get(issue_id)
-        if issue is None:
-            raise ValueError(f"Issue {issue_id} not found")
-        if issue.status not in (IssueStatus.open, IssueStatus.planned, IssueStatus.waiting_human, IssueStatus.cancelled):
+        """Atomically claim a pending Issue and schedule its execution."""
+        if not await self.issue_repo.start(issue_id):
+            issue = await self.issue_repo.get(issue_id)
+            if issue is None:
+                raise ValueError(f"Issue {issue_id} not found")
             raise ValueError(f"Issue {issue_id} is in status {issue.status}, cannot run")
+
         cancel_event = asyncio.Event()
         self._cancel_tokens[issue_id] = cancel_event
         task = asyncio.create_task(self._run_task(issue_id, cancel_event))
         self._running_tasks[issue_id] = task
         task.add_done_callback(lambda _: self._cleanup(issue_id))
-
-    async def start_plan(self, issue_id: str) -> None:
-        """Generate Spec (open → planning → planned)."""
-        issue = await self.issue_repo.get(issue_id)
-        if issue is None:
-            raise ValueError(f"Issue {issue_id} not found")
-        if issue.status != IssueStatus.open:
-            raise ValueError(f"Issue {issue_id} is in status {issue.status}, must be 'open' to plan")
-        cancel_event = asyncio.Event()
-        self._cancel_tokens[issue_id] = cancel_event
-        task = asyncio.create_task(self._run_plan(issue_id, cancel_event))
-        self._running_tasks[issue_id] = task
-        task.add_done_callback(lambda _: self._cleanup(issue_id))
-
-    async def _run_plan(self, issue_id: str, cancel_event: asyncio.Event) -> None:
-        """Execute the plan flow: open → planning → PlanSkill → planned.
-
-        Retry strategy: on JSON extraction failure OR timeout, retry once with
-        a stricter prompt. If retry also fails → waiting_human.
-
-        Uses ``agent.plan_timeout`` (default 600s) instead of the normal
-        cc-connect timeout — plan generation needs more time because it
-        reads the whole codebase before producing a spec.
-        """
-        issue = await self.issue_repo.get(issue_id)
-        assert issue is not None
-        await self.issue_repo.update_status(issue_id, IssueStatus.planning)
-        self._emit(issue_id, "plan_start", {"issue_id": issue_id})
-        workspace = self._resolve_workspace(issue)
-
-        # Create a lifecycle execution record (turn=0) for plan-level logs
-        plan_lifecycle_id = str(uuid.uuid4())
-        await self.exec_repo.create(
-            execution_id=plan_lifecycle_id, issue_id=issue_id,
-            turn_number=0, attempt_number=0,
-            prompt=None, context_snapshot=None, git_diff_snapshot=None,
-        )
-        await self._log(
-            issue_id, plan_lifecycle_id, LogLevel.info,
-            f"开始生成 Spec，工作目录: {workspace}",
-        )
-
-        ctx = build_turn_context(
-            issue=issue, turn_number=1, max_turns=1,
-            human_instruction=issue.human_instruction,
-        )
-
-        plan_timeout = self.settings.agent.plan_timeout
-        max_attempts = 2  # 1 normal + 1 strict retry
-        raw_output: str | None = None
-
-        try:
-            for attempt in range(max_attempts):
-                if cancel_event.is_set():
-                    await self._log(issue_id, plan_lifecycle_id, LogLevel.warn, "Spec 生成已取消")
-                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.cancelled,
-                                                error_message="Spec 生成已取消")
-                    await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
-                    self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
-                    return
-
-                # Build prompt: strict on retry
-                if attempt == 0:
-                    prompt = self.plan_skill._build_plan_prompt(ctx)
-                else:
-                    prompt = self.plan_skill.build_strict_prompt(ctx)
-                    logger.info("Plan %s: retrying with strict prompt (attempt %d)", issue_id, attempt + 1)
-                    await self._log(
-                        issue_id, plan_lifecycle_id, LogLevel.warn,
-                        f"Spec JSON 解析失败，使用严格模式重试（第 {attempt + 1}/{max_attempts} 次）",
-                    )
-
-                # Create execution record
-                execution_id = str(uuid.uuid4())
-                await self.exec_repo.create(
-                    execution_id=execution_id, issue_id=issue_id,
-                    turn_number=1, attempt_number=attempt + 1,
-                    prompt=prompt,
-                    context_snapshot=_context_to_dict(ctx), git_diff_snapshot=None,
-                )
-
-                # Bridge cc-connect progress events to the EventBus.
-                def on_agent_event(event: dict) -> None:
-                    self._emit(issue_id, "agent_step", event)
-                    asyncio.create_task(self._persist_step(execution_id, event))
-
-                try:
-                    async with asyncio.timeout(plan_timeout):
-                        raw_output = await self.plan_skill.client.run_prompt(
-                            prompt, cwd=workspace,
-                            cancel_event=cancel_event, on_event=on_agent_event,
-                        )
-                    await self.exec_repo.finish(
-                        execution_id, status=ExecutionStatus.completed, result=raw_output,
-                    )
-                except TimeoutError:
-                    await self.exec_repo.finish(
-                        execution_id, status=ExecutionStatus.timeout,
-                        error_message=f"Plan generation timed out after {plan_timeout}s",
-                    )
-                    await self._log(
-                        issue_id, plan_lifecycle_id, LogLevel.error,
-                        f"Spec 生成超时（{plan_timeout}s，第 {attempt + 1}/{max_attempts} 次）",
-                    )
-                    logger.warning(
-                        "Plan %s: timed out after %ds (attempt %d/%d)",
-                        issue_id, plan_timeout, attempt + 1, max_attempts,
-                    )
-                    # Allow retry on timeout — only fail after all attempts
-                    if attempt + 1 >= max_attempts:
-                        await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
-                                                    error_message="Spec 生成超时")
-                        await self._fail_plan(
-                            issue_id,
-                            f"Spec 生成超时（{plan_timeout}s，已重试 {max_attempts} 次）",
-                        )
-                        return
-                    continue
-                except asyncio.CancelledError:
-                    await self.exec_repo.finish(
-                        execution_id, status=ExecutionStatus.cancelled,
-                        error_message="Cancelled by user",
-                    )
-                    await self._log(issue_id, plan_lifecycle_id, LogLevel.warn, "Spec 生成已取消")
-                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.cancelled,
-                                                error_message="Spec 生成已取消")
-                    await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
-                    self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
-                    return
-                except Exception as e:
-                    await self.exec_repo.finish(
-                        execution_id, status=ExecutionStatus.failed,
-                        error_message=f"{type(e).__name__}: {e}",
-                    )
-                    await self._log(
-                        issue_id, plan_lifecycle_id, LogLevel.error, f"Spec 生成异常: {e}",
-                    )
-                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
-                                                error_message=f"Spec 生成异常: {e}")
-                    await self._fail_plan(issue_id, f"Spec 生成异常: {e}")
-                    return
-
-                # Try to extract JSON from the output
-                spec_data = extract_spec_json(raw_output or "")
-                if spec_data is not None:
-                    validated = validate_spec(spec_data)
-                    spec_json = json.dumps(validated, ensure_ascii=False)
-                    await self.issue_repo.update_fields(issue_id, spec=spec_json)
-                    await self.issue_repo.update_status(issue_id, IssueStatus.planned)
-                    await self._log(issue_id, plan_lifecycle_id, LogLevel.info, "Spec 生成完成")
-                    await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.completed)
-                    self._emit(issue_id, "plan_end", {
-                        "issue_id": issue_id, "success": True, "spec": validated,
-                    })
-                    return
-
-                # JSON extraction failed — will retry if attempts remain
-                logger.warning(
-                    "Plan %s: JSON extraction failed (attempt %d/%d)",
-                    issue_id, attempt + 1, max_attempts,
-                )
-
-            # All attempts exhausted — transition to waiting_human
-            truncated_output = (raw_output or "")[:2000]
-            await self._log(
-                issue_id, plan_lifecycle_id, LogLevel.error,
-                f"Spec JSON 解析失败（已重试 {max_attempts} 次）",
-            )
-            await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
-                                        error_message="Spec JSON 解析失败")
-            await self._fail_plan(
-                issue_id,
-                f"Spec JSON 解析失败（已重试 {max_attempts} 次）。原始输出：\n{truncated_output}",
-            )
-        except Exception as e:
-            logger.exception("Unexpected error in plan flow for %s", issue_id)
-            await self._log(
-                issue_id, plan_lifecycle_id, LogLevel.error, f"计划生成未预期错误: {e}",
-            )
-            await self.exec_repo.finish(plan_lifecycle_id, status=ExecutionStatus.failed,
-                                        error_message=f"计划生成未预期错误: {e}")
-            await self._fail_plan(issue_id, f"计划生成未预期错误: {e}")
-
-    async def _fail_plan(self, issue_id: str, reason: str) -> None:
-        """Mark issue as waiting_human after plan failure."""
-        logger.warning("Plan %s failed: %s", issue_id, reason)
-        await self.issue_repo.update_fields(issue_id, failure_reason=reason)
-        await self.issue_repo.update_status(issue_id, IssueStatus.waiting_human)
-        self._emit(issue_id, "plan_end", {"issue_id": issue_id, "success": False, "failure_reason": reason})
 
     async def cancel_task(self, issue_id: str) -> bool:
         cancel_event = self._cancel_tokens.get(issue_id)
@@ -311,446 +91,16 @@ class AgentRuntime:
         self._cancel_tokens.pop(issue_id, None)
         self._running_tasks.pop(issue_id, None)
 
-    def _resolve_workspace(self, issue: Issue) -> str:
-        """Return the working directory for an issue, falling back to global config.
-
-        If the resolved path itself is a git repo, return it.
-        Otherwise scan immediate children first (common: user gave repo parent),
-        then walk upward as last resort.
-        Returns the best candidate so git operations have the right cwd.
-        """
-        from pathlib import Path
-
-        raw = issue.workspace or self.settings.project.workspace
-        resolved = Path(raw).resolve()
-
-        # 1. Exact match — path itself is a git repo
-        if self._is_git_repo(resolved):
-            return str(resolved)
-
-        # 2. Scan immediate children FIRST (user gave the parent of the repo)
-        #    This is more common than giving a subdirectory of a repo.
-        try:
-            for child in sorted(resolved.iterdir()):
-                if child.is_dir() and self._is_git_repo(child):
-                    return str(child)
-        except OSError:
-            pass
-
-        # 3. Walk upward (user gave a subdirectory of the repo)
-        for parent in resolved.parents:
-            if self._is_git_repo(parent):
-                return str(parent)
-
-        # Nothing found — return original so the caller produces a clear error
-        return str(resolved)
-
-    @staticmethod
-    def _is_git_repo(path) -> bool:
-        """Check if a path is a real git repository (not just an empty .git dir)."""
-        git_dir = path / ".git"
-        if not git_dir.exists():
-            return False
-        # A real git repo has .git/HEAD; an empty .git directory does not
-        if git_dir.is_dir():
-            return (git_dir / "HEAD").exists()
-        # .git can also be a file (worktree pointer): "gitdir: /path/to/..."
-        if git_dir.is_file():
-            return True
-        return False
-
     async def _run_task(self, issue_id: str, cancel_event: asyncio.Event) -> None:
-        issue = await self.issue_repo.get(issue_id)
-        assert issue is not None
-        await self.issue_repo.update_status(issue_id, IssueStatus.running)
-        branch_name = f"agent/{issue_id[:8]}"
-        workspace = self._resolve_workspace(issue)
-
-        # Create a lifecycle execution record (turn=0) for task-level logs
-        lifecycle_id = str(uuid.uuid4())
-        await self.exec_repo.create(
-            execution_id=lifecycle_id, issue_id=issue_id,
-            turn_number=0, attempt_number=0,
-            prompt=None, context_snapshot=None, git_diff_snapshot=None,
-        )
-
-        branch_ok = await self._git_create_branch(branch_name, cwd=workspace)
-        if not branch_ok:
-            await self._log(
-                issue_id, lifecycle_id, LogLevel.error,
-                f"Git 分支创建失败：工作目录 {workspace} 可能不是有效的 git 仓库",
-            )
-            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
-                                        error_message="Git 分支创建失败")
-            await self._fail_task(issue_id, f"Git 分支创建失败：工作目录 {workspace} 可能不是有效的 git 仓库")
-            return
-        await self.issue_repo.update_fields(issue_id, branch_name=branch_name)
-        self._emit(issue_id, "task_start", {"issue_id": issue_id, "branch_name": branch_name})
-        max_turns = self.settings.agent.max_turns
-        task_timeout = self.settings.agent.task_timeout
-        await self._log(
-            issue_id, lifecycle_id, LogLevel.info,
-            f"任务开始，分支: {branch_name}，工作目录: {workspace}",
-        )
-        await self._log(
-            issue_id, lifecycle_id, LogLevel.info,
-            f"开始执行，最大轮次: {max_turns}，任务超时: {task_timeout}s",
-        )
-        last_result: str | None = None
-        last_error: str | None = None
-        execution_history: list[dict] = []
-        success = False
-        try:
-            async with asyncio.timeout(task_timeout):
-                for turn in range(1, max_turns + 1):
-                    if cancel_event.is_set():
-                        await self._log(issue_id, lifecycle_id, LogLevel.warn, "任务已取消")
-                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.cancelled,
-                                                    error_message="任务已取消")
-                        await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
-                        self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
-                        return
-                    turn_result = await self._run_turn(
-                        issue=issue, turn_number=turn, max_turns=max_turns,
-                        cancel_event=cancel_event,
-                        last_result=last_result, last_error=last_error,
-                        execution_history=execution_history,
-                    )
-                    execution_history.append({
-                        "turn": turn,
-                        "status": "completed" if turn_result.get("success") else "failed",
-                        "summary": (turn_result.get("result") or turn_result.get("error") or "")[:200],
-                    })
-                    if turn_result.get("success"):
-                        success = True
-                        break
-                    last_result = turn_result.get("result")
-                    last_error = turn_result.get("error")
-        except TimeoutError:
-            await self._log(
-                issue_id, lifecycle_id, LogLevel.error, f"任务执行超时（{task_timeout}s）",
-            )
-            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.timeout,
-                                        error_message=f"任务执行超时（{task_timeout}s）")
-            await self._fail_task(issue_id, f"任务执行超时（{task_timeout}s）")
-            return
-        except asyncio.CancelledError:
-            await self._log(issue_id, lifecycle_id, LogLevel.warn, "任务已取消")
-            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.cancelled,
-                                        error_message="任务已取消")
-            await self.issue_repo.update_status(issue_id, IssueStatus.cancelled)
-            self._emit(issue_id, "task_cancelled", {"issue_id": issue_id})
-            return
-        if success:
-            committed = await self._git_commit(
-                branch_name, f"agent: resolve issue {issue.title}", cwd=workspace,
-            )
-            if not committed:
-                await self._log(
-                    issue_id, lifecycle_id, LogLevel.warn, "AI 报告执行成功，但未产生文件变更",
-                )
-                await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
-                                            error_message="AI 报告执行成功，但未产生文件变更")
-                await self._fail_task(issue_id, "AI 报告执行成功，但未产生文件变更")
-            else:
-                await self._log(
-                    issue_id, lifecycle_id, LogLevel.info, f"Git commit 完成，分支: {branch_name}",
-                )
-                self._emit(issue_id, "git_commit", {"branch_name": branch_name})
-                pushed = await self._git_push(branch_name, cwd=workspace)
-                if not pushed:
-                    await self._log(
-                        issue_id, lifecycle_id, LogLevel.error,
-                        f"Git push 到远程仓库失败（分支 {branch_name}）",
-                    )
-                    await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
-                                                error_message="Git push 失败")
-                    await self._fail_task(issue_id, f"Git push 到远程仓库失败（分支 {branch_name}）")
-                else:
-                    await self._log(
-                        issue_id, lifecycle_id, LogLevel.info, f"Git push 完成，分支: {branch_name}",
-                    )
-                    self._emit(issue_id, "git_push", {"branch_name": branch_name})
-                    pr_url = await self._create_pr(branch_name, issue, cwd=workspace)
-                    if pr_url:
-                        await self._log(
-                            issue_id, lifecycle_id, LogLevel.info, f"PR 已创建: {pr_url}",
-                        )
-                        await self.issue_repo.update_fields(issue_id, pr_url=pr_url)
-                        self._emit(issue_id, "pr_created", {"pr_url": pr_url})
-                        await self.issue_repo.update_status(issue_id, IssueStatus.review)
-                        await self._log(issue_id, lifecycle_id, LogLevel.info, "任务完成")
-                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.completed)
-                        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": pr_url})
-                    else:
-                        await self._log(
-                            issue_id, lifecycle_id, LogLevel.warn, "PR 创建失败（代码已推送至远程）",
-                        )
-                        logger.warning("Task %s: PR creation failed (code is pushed)", issue_id)
-                        await self.issue_repo.update_status(issue_id, IssueStatus.done)
-                        await self._log(issue_id, lifecycle_id, LogLevel.info, "任务完成（无 PR）")
-                        await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.completed)
-                        self._emit(issue_id, "task_end", {"issue_id": issue_id, "success": True, "pr_url": None})
+        """Record a terminal result until Task 3 supplies Bridge execution."""
+        if cancel_event.is_set():
+            message = "任务已取消"
         else:
-            await self._log(
-                issue_id, lifecycle_id, LogLevel.error, "AI 执行未能解决问题，已用完所有重试轮次",
-            )
-            await self.exec_repo.finish(lifecycle_id, status=ExecutionStatus.failed,
-                                        error_message="已用完所有重试轮次")
-            await self._fail_task(issue_id, "AI 执行未能解决问题，已用完所有重试轮次")
+            message = "Issue execution will be dispatched through cc-connect Bridge."
 
-    async def _run_turn(self, *, issue, turn_number, max_turns,
-                        cancel_event, last_result, last_error, execution_history) -> dict:
-        self._emit(issue.id, "turn_start", {"turn_number": turn_number, "max_turns": max_turns})
-        fresh_issue = await self.issue_repo.get(issue.id)
-        workspace = self._resolve_workspace(fresh_issue or issue)
-        git_diff = await self._get_git_diff(cwd=workspace)
-        active_issue = fresh_issue or issue
-        ctx = build_turn_context(
-            issue=active_issue, turn_number=turn_number, max_turns=max_turns,
-            last_result=last_result, last_error=last_error, git_diff=git_diff,
-            execution_history=execution_history,
-            human_instruction=active_issue.human_instruction,
-            spec=active_issue.spec,
-        )
-        execution_id = str(uuid.uuid4())
-        await self.exec_repo.create(
-            execution_id=execution_id, issue_id=issue.id,
-            turn_number=turn_number, attempt_number=1,
-            prompt=self.skill._build_prompt(ctx),
-            context_snapshot=_context_to_dict(ctx), git_diff_snapshot=git_diff,
-        )
-        await self._log(
-            issue.id, execution_id, LogLevel.info, f"开始第 {turn_number}/{max_turns} 轮",
-        )
-        result = await self._run_attempt(
-            execution_id=execution_id, ctx=ctx,
-            cancel_event=cancel_event, cwd=workspace,
-        )
-        turn_status = "成功" if result.get("success", False) else "失败"
-        await self._log(
-            issue.id, execution_id, LogLevel.info, f"第 {turn_number}/{max_turns} 轮完成（{turn_status}）",
-        )
-        self._emit(issue.id, "turn_end", {"turn_number": turn_number, "success": result.get("success", False)})
-        return result
-
-    async def _run_attempt(self, *, execution_id, ctx, cancel_event, cwd: str) -> dict:
-        issue_id = ctx.issue.id
-        self._emit(issue_id, "attempt_start", {"execution_id": execution_id})
-        start = time.monotonic()
-        attempt_timeout = self.settings.cc_connect.timeout
-
-        # Bridge cc-connect progress events to the EventBus.
-        def on_agent_event(event: dict) -> None:
-            self._emit(issue_id, "agent_step", event)
-            asyncio.create_task(self._persist_step(execution_id, event))
-
-        try:
-            async with asyncio.timeout(attempt_timeout):
-                result_text = await self.skill.execute(
-                    ctx, cwd, cancel_event=cancel_event,
-                    on_event=on_agent_event,
-                )
-            duration_ms = int((time.monotonic() - start) * 1000)
-            await self._audit_commands(issue_id, execution_id, result_text)
-            await self.exec_repo.finish(execution_id, status=ExecutionStatus.completed,
-                                        result=result_text, duration_ms=duration_ms)
-            await self._log(issue_id, execution_id, LogLevel.info, f"Turn completed in {duration_ms}ms")
-            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "completed", "duration_ms": duration_ms})
-            return {"success": True, "result": result_text, "error": None}
-        except TimeoutError:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            error_msg = f"Attempt timed out after {attempt_timeout}s"
-            await self.exec_repo.finish(execution_id, status=ExecutionStatus.timeout,
-                                        error_message=error_msg, duration_ms=duration_ms)
-            await self._log(issue_id, execution_id, LogLevel.error, error_msg)
-            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "timeout", "duration_ms": duration_ms})
-            return {"success": False, "result": None, "error": error_msg}
-        except asyncio.CancelledError:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            await self.exec_repo.finish(execution_id, status=ExecutionStatus.cancelled,
-                                        error_message="Cancelled by user", duration_ms=duration_ms)
-            await self._log(issue_id, execution_id, LogLevel.warn, "执行已取消")
-            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "cancelled", "duration_ms": duration_ms})
-            raise
-        except Exception as e:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            error_msg = f"{type(e).__name__}: {e}"
-            await self.exec_repo.finish(execution_id, status=ExecutionStatus.failed,
-                                        error_message=error_msg, duration_ms=duration_ms)
-            await self._log(issue_id, execution_id, LogLevel.error, error_msg)
-            self._emit(issue_id, "attempt_end", {"execution_id": execution_id, "status": "failed", "duration_ms": duration_ms})
-            return {"success": False, "result": None, "error": error_msg}
-
-    async def _audit_commands(self, issue_id: str, execution_id: str, result_text: str) -> None:
-        commands = extract_commands_from_result(result_text)
-        security_cfg = self.settings.security
-        for cmd in commands:
-            is_allowed = validate_command(cmd, security_cfg)
-            level = LogLevel.info if is_allowed else LogLevel.warn
-            prefix = "CMD" if is_allowed else "⚠ BLOCKED CMD"
-            await self._log(issue_id, execution_id, level, f"{prefix}: {cmd}")
-
-    async def _persist_step(self, execution_id: str, event: dict) -> None:
-        """Persist an agent progress event to the database (fire-and-forget)."""
-        try:
-            await self.step_repo.create(
-                execution_id=execution_id,
-                step_type=event.get("step_type", "step"),
-                tool=event.get("tool"),
-                target=event.get("target"),
-                summary=event.get("summary"),
-            )
-        except Exception:
-            logger.warning("Failed to persist execution step", exc_info=True)
-
-    async def _git_create_branch(self, branch_name: str, *, cwd: str) -> bool:
-        """Create and checkout a branch. Returns True on success."""
-        # Check if branch already exists
-        check = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--verify", branch_name, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        await check.communicate()
-        if check.returncode == 0:
-            # Branch exists — just checkout
-            proc = await asyncio.create_subprocess_exec(
-                "git", "checkout", branch_name, cwd=cwd,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning("git checkout failed: %s", stderr.decode())
-                return False
-        else:
-            # Branch does not exist — create and checkout
-            proc = await asyncio.create_subprocess_exec(
-                "git", "checkout", "-b", branch_name, cwd=cwd,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning("git checkout -b failed: %s", stderr.decode())
-                return False
-        return True
-
-    async def _git_commit(self, branch_name: str, message: str, *, cwd: str) -> bool:
-        """Stage changed files and commit. Returns True if a commit was made."""
-        # 1. Get modified tracked files
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--name-only", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        modified = [f for f in stdout.decode().strip().splitlines() if f]
-
-        # 2. Get new untracked files (respecting .gitignore)
-        proc = await asyncio.create_subprocess_exec(
-            "git", "ls-files", "--others", "--exclude-standard", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        untracked = [f for f in stdout.decode().strip().splitlines() if f]
-
-        files_to_add = modified + untracked
-        if not files_to_add:
-            logger.warning("No file changes to commit")
-            return False
-
-        # 3. Stage only the changed files
-        proc = await asyncio.create_subprocess_exec(
-            "git", "add", "--", *files_to_add, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-
-        # 4. Verify something is staged
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--cached", "--quiet", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-        if proc.returncode == 0:
-            # returncode 0 means no staged changes
-            logger.warning("Nothing staged after git add")
-            return False
-
-        # 5. Commit (no --allow-empty)
-        proc = await asyncio.create_subprocess_exec(
-            "git", "commit", "-m", message, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.warning("git commit failed: %s", stderr.decode())
-            return False
-        return True
-
-    async def _git_push(self, branch_name: str, *, cwd: str) -> bool:
-        """Push branch to remote. Returns True on success."""
-        remote = self.settings.project.remote
-        proc = await asyncio.create_subprocess_exec(
-            "git", "push", "-u", remote, branch_name, cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.warning("git push failed: %s", stderr.decode())
-            return False
-        return True
-
-    async def _get_changed_files(self, branch_name: str, *, cwd: str) -> list[str]:
-        """Return list of changed file paths between pr_base and branch."""
-        pr_base = self.settings.project.pr_base
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--name-only", f"{pr_base}...{branch_name}", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode != 0:
-            return []
-        return [f for f in stdout.decode().strip().splitlines() if f]
-
-    async def _create_pr(
-        self, branch_name: str, issue: Issue, *, cwd: str
-    ) -> str | None:
-        """Create a PR via gh CLI. Returns the PR URL on success, None on failure."""
-        pr_base = self.settings.project.pr_base
-        title = f"agent: {issue.title}"
-        # Build body: issue description + changed files list
-        body = issue.description or issue.title
-        changed_files = await self._get_changed_files(branch_name, cwd=cwd)
-        if changed_files:
-            file_list = "\n".join(f"- {f}" for f in changed_files)
-            body = f"{body}\n\n---\nChanged files:\n{file_list}"
-        proc = await asyncio.create_subprocess_exec(
-            "gh", "pr", "create",
-            "--base", pr_base,
-            "--head", branch_name,
-            "--title", title,
-            "--body", body,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.warning("gh pr create failed: %s", stderr.decode())
-            return None
-        pr_url = stdout.decode().strip()
-        return pr_url or None
-
-    async def _get_git_diff(self, *, cwd: str) -> str | None:
-        default_branch = self.settings.project.default_branch
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", default_branch, "--", cwd=cwd,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        diff = stdout.decode()
-        return diff if diff.strip() else None
-
-
-def _context_to_dict(ctx) -> dict:
-    d = asdict(ctx)
-    d["issue"] = ctx.issue.model_dump()
-    return d
+        await self.issue_repo.finish(issue_id, IssueOutcome.error, None, message)
+        self._emit(issue_id, "task_end", {
+            "issue_id": issue_id,
+            "success": False,
+            "error_message": message,
+        })
