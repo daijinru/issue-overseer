@@ -13,13 +13,9 @@ interface TopBarProps {
 export function TopBar({ issues, onCreated, onRefresh }: TopBarProps) {
   const [formOpen, setFormOpen] = useState(false);
 
-  const runningCount = issues.filter(
-    (i) => i.status === 'running' || i.status === 'planning',
-  ).length;
+  const runningCount = issues.filter((i) => i.status === 'running').length;
 
-  const queuedCount = issues.filter(
-    (i) => i.status === 'open' || i.status === 'planned',
-  ).length;
+  const queuedCount = issues.filter((i) => i.status === 'pending').length;
 
   return (
     <div className="topbar">
