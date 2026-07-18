@@ -7,7 +7,7 @@ from functools import lru_cache
 
 from typing import Any, Tuple, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
 
 
@@ -28,7 +28,7 @@ class CCConnectConfig(BaseModel):
     """Connection details for cc-connect's Bridge WebSocket endpoint."""
 
     url: str = "ws://localhost:9810/bridge/ws"
-    token: str = os.environ.get("CC_CONNECT_BRIDGE_TOKEN", "")
+    token: str = Field(default_factory=lambda: os.environ.get("CC_CONNECT_BRIDGE_TOKEN", ""))
     platform: str = "issue-overseer"
     timeout: int = 1800
 
