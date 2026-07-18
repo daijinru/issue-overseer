@@ -26,6 +26,8 @@ class ProjectInfo:
 class CCConnectClient:
     """Expose the existing skill client interface through cc-connect Bridge."""
 
+    _RECEIVE_POLL_SECONDS = 0.01
+
     def __init__(
         self,
         *,
@@ -47,24 +49,28 @@ class CCConnectClient:
     async def list_projects(self) -> list[ProjectInfo]:
         """Return the projects advertised in Bridge's capabilities snapshot."""
         try:
-            async with self._connect(self.url, additional_headers=self._headers()) as socket:
-                await self._register(socket)
-                snapshot = await self._recv_frame(socket)
-                if snapshot.get("type") == "error":
-                    raise CCConnectBridgeError(snapshot.get("message") or "cc-connect returned an error")
-                if snapshot.get("type") != "capabilities_snapshot":
-                    raise CCConnectBridgeError("cc-connect did not return a capabilities snapshot")
+            async with asyncio.timeout(self.timeout):
+                deadline = self._deadline()
+                async with self._connect(self.url, additional_headers=self._headers()) as socket:
+                    await self._register(socket, deadline)
+                    snapshot = await self._recv_frame(socket, deadline)
+                    if snapshot.get("type") == "error":
+                        raise CCConnectBridgeError(snapshot.get("message") or "cc-connect returned an error")
+                    if snapshot.get("type") != "capabilities_snapshot":
+                        raise CCConnectBridgeError("cc-connect did not return a capabilities snapshot")
 
-                projects = snapshot.get("projects")
-                if not isinstance(projects, list):
-                    raise CCConnectBridgeError("cc-connect capabilities snapshot has invalid projects")
+                    projects = snapshot.get("projects")
+                    if not isinstance(projects, list):
+                        raise CCConnectBridgeError("cc-connect capabilities snapshot has invalid projects")
 
-                result: list[ProjectInfo] = []
-                for project in projects:
-                    if not isinstance(project, dict) or not isinstance(project.get("project"), str):
-                        raise CCConnectBridgeError("cc-connect capabilities snapshot has an invalid project")
-                    result.append(ProjectInfo(name=project["project"]))
-                return result
+                    result: list[ProjectInfo] = []
+                    for project in projects:
+                        if not isinstance(project, dict) or not isinstance(project.get("project"), str):
+                            raise CCConnectBridgeError("cc-connect capabilities snapshot has an invalid project")
+                        result.append(ProjectInfo(name=project["project"]))
+                    return result
+        except TimeoutError as exc:
+            raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
         except CCConnectBridgeError:
             raise
         except Exception as exc:
@@ -74,18 +80,22 @@ class CCConnectClient:
         """Submit an issue to one explicit cc-connect project."""
         request_id = str(uuid.uuid4())
         try:
-            async with self._connect(self.url, additional_headers=self._headers()) as socket:
-                await self._register(socket)
-                await socket.send(json.dumps({
-                    "type": "message",
-                    "msg_id": request_id,
-                    "project": project,
-                    "session_key": f"{self.platform}:{issue_id}:issue",
-                    "user_id": "issue-overseer",
-                    "content": content,
-                    "reply_ctx": request_id,
-                }))
-                return await self._wait_for_reply(socket, request_id, None)
+            async with asyncio.timeout(self.timeout):
+                deadline = self._deadline()
+                async with self._connect(self.url, additional_headers=self._headers()) as socket:
+                    await self._register(socket, deadline)
+                    await socket.send(json.dumps({
+                        "type": "message",
+                        "msg_id": request_id,
+                        "project": project,
+                        "session_key": f"{self.platform}:{issue_id}:issue",
+                        "user_id": "issue-overseer",
+                        "content": content,
+                        "reply_ctx": request_id,
+                    }))
+                    return await self._wait_for_reply(socket, request_id, None, deadline)
+        except TimeoutError as exc:
+            raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
         except CCConnectBridgeError:
             raise
         except Exception as exc:
@@ -111,31 +121,41 @@ class CCConnectClient:
             on_event({"step_type": "thinking", "summary": "已提交给 cc-connect / WisCode"})
 
         try:
-            async with self._connect(
-                self.url,
-                additional_headers=self._headers(),
-            ) as socket:
-                await self._register(socket)
+            async with asyncio.timeout(self.timeout):
+                deadline = self._deadline()
+                async with self._connect(
+                    self.url,
+                    additional_headers=self._headers(),
+                ) as socket:
+                    await self._register(socket, deadline, cancel_event)
 
-                await socket.send(json.dumps({
-                    "type": "message",
-                    "msg_id": request_id,
-                    "session_key": session_key,
-                    "user_id": "issue-overseer",
-                    "content": task_content,
-                    "reply_ctx": request_id,
-                }))
-                return await self._wait_for_reply(socket, request_id, cancel_event)
+                    await socket.send(json.dumps({
+                        "type": "message",
+                        "msg_id": request_id,
+                        "session_key": session_key,
+                        "user_id": "issue-overseer",
+                        "content": task_content,
+                        "reply_ctx": request_id,
+                    }))
+                    return await self._wait_for_reply(socket, request_id, cancel_event, deadline)
+        except TimeoutError as exc:
+            raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
         except CCConnectBridgeError:
             raise
         except Exception as exc:
             raise CCConnectBridgeError(f"cc-connect Bridge error: {exc}") from exc
 
-    async def _wait_for_reply(self, socket: Any, request_id: str, cancel_event: asyncio.Event | None) -> str:
+    async def _wait_for_reply(
+        self,
+        socket: Any,
+        request_id: str,
+        cancel_event: asyncio.Event | None,
+        deadline: float,
+    ) -> str:
         while True:
             if cancel_event and cancel_event.is_set():
                 raise asyncio.CancelledError("Task cancelled during cc-connect execution")
-            frame = await self._recv_frame(socket)
+            frame = await self._recv_frame(socket, deadline, cancel_event)
             if frame.get("type") == "reply" and frame.get("reply_ctx") == request_id:
                 content = frame.get("content")
                 if isinstance(content, str):
@@ -146,25 +166,47 @@ class CCConnectClient:
             if frame.get("type") == "close":
                 raise CCConnectBridgeError(frame.get("reason") or "cc-connect Bridge connection closed")
 
-    async def _register(self, socket: Any) -> None:
+    async def _register(
+        self,
+        socket: Any,
+        deadline: float,
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
         await socket.send(json.dumps({
             "type": "register",
             "platform": self.platform,
             "capabilities": ["text"],
             "metadata": {"protocol_version": 1},
         }))
-        ack = await self._recv_frame(socket)
+        ack = await self._recv_frame(socket, deadline, cancel_event)
         if ack.get("type") == "error":
             raise CCConnectBridgeError(ack.get("message") or "cc-connect returned an error")
         if ack.get("type") != "register_ack" or not ack.get("ok"):
             raise CCConnectBridgeError(ack.get("error") or "cc-connect registration failed")
 
-    async def _recv_frame(self, socket: Any) -> dict[str, Any]:
-        try:
-            payload = await asyncio.wait_for(socket.recv(), timeout=self.timeout)
-        except asyncio.TimeoutError as exc:
-            raise CCConnectBridgeError("cc-connect Bridge request timed out") from exc
-        return self._parse_frame(payload)
+    def _deadline(self) -> float:
+        return asyncio.get_running_loop().time() + self.timeout
+
+    async def _recv_frame(
+        self,
+        socket: Any,
+        deadline: float,
+        cancel_event: asyncio.Event | None = None,
+    ) -> dict[str, Any]:
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError("Task cancelled during cc-connect execution")
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise CCConnectBridgeError("cc-connect Bridge request timed out")
+            try:
+                payload = await asyncio.wait_for(
+                    socket.recv(),
+                    timeout=min(self._RECEIVE_POLL_SECONDS, remaining),
+                )
+            except asyncio.TimeoutError:
+                continue
+            return self._parse_frame(payload)
 
     @staticmethod
     def _parse_frame(payload: str) -> dict[str, Any]:
