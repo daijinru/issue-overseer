@@ -128,7 +128,9 @@ class CCConnectClient:
             "type": "register",
             "platform": self.platform,
             "capabilities": ["text"],
-            "metadata": {"protocol_version": 1},
+            # Ask cc-connect for its project capability snapshot.  This is the
+            # control-plane feature negotiated by the current Bridge protocol.
+            "metadata": {"control_plane": ["capabilities_snapshot_v1"]},
         }))
         ack = await self._recv_frame(socket, deadline)
         if ack.get("type") == "error":

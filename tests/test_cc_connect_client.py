@@ -74,6 +74,9 @@ async def test_list_projects_reads_capabilities_snapshot() -> None:
 
     assert [project.name for project in await client.list_projects()] == ["api"]
     assert socket.connect_headers is None
+    assert socket.sent[0]["metadata"] == {
+        "control_plane": ["capabilities_snapshot_v1"],
+    }
 
 
 @pytest.mark.asyncio
